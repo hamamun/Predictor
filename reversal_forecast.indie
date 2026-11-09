@@ -74,9 +74,9 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
         candidate_estimate_state[0] = 0.0
         candidate_reason_state[0] = 0.0
 
-    # Var preserves this chart-fixed table while the chart redraws bars.
+    # Keep the dashboard at the chart's upper-left, below the indicator legend.
     dashboard = Var[Table].new(Table(
-        position=RelativePosition(va.TOP, ha.RIGHT, 0.03, 0.96),
+        position=RelativePosition(va.TOP, ha.LEFT, 0.11, 0.02),
     ))
 
     # All calculations are anchored to bar 1: the most recently CLOSED candle.
