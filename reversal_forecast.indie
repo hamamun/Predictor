@@ -1,8 +1,9 @@
 # indie:lang_version = 5
 # Reversal Forecast — Exness Terminal / Indie
 # Signals use the last CLOSED candle (offset 1), so an unfinished candle cannot repaint.
-from math import nan
-from indie import indicator, param, plot, color, MutSeriesF
+from math import nan, isnan
+from indie import indicator, param, plot, color, MutSeriesF, Var
+from indie.drawings import LabelRel, RelativePosition, vertical_anchor as va, horizontal_anchor as ha
 
 
 @indicator('Reversal Forecast (Historical Analogs)', overlay_main_pane=True)
@@ -15,17 +16,17 @@ from indie import indicator, param, plot, color, MutSeriesF
 @param.int('minimum_analogs', default=6, min=2, max=50, title='Minimum similar historical setups')
 @param.int('minimum_followthrough_pct', default=55, min=1, max=99, title='Minimum historical follow-through percent')
 @param.float('minimum_reward_risk', default=1.2, min=0.5, max=5.0, step=0.1, title='Minimum forecast reward/risk')
-@plot.marker(title='Bullish reversal forecast', style=plot.marker_style.LABEL, position=plot.marker_position.BELOW)
-@plot.marker(title='Bearish reversal forecast', style=plot.marker_style.LABEL, position=plot.marker_position.ABOVE)
-@plot.marker(title='Entry trigger', style=plot.marker_style.CIRCLE, position=plot.marker_position.CENTER)
-@plot.marker(title='Stop loss', style=plot.marker_style.CROSS, position=plot.marker_position.CENTER)
-@plot.marker(title='Take profit forecast', style=plot.marker_style.CIRCLE, position=plot.marker_position.CENTER)
+@plot.marker(title='Bullish reversal candidate', style=plot.marker_style.CIRCLE, position=plot.marker_position.BELOW, size=6)
+@plot.marker(title='Bearish reversal candidate', style=plot.marker_style.CIRCLE, position=plot.marker_position.ABOVE, size=6)
+@plot.marker(title='Entry trigger', style=plot.marker_style.CIRCLE, position=plot.marker_position.CENTER, size=5)
+@plot.marker(title='Stop loss', style=plot.marker_style.CROSS, position=plot.marker_position.CENTER, size=5)
+@plot.marker(title='Estimated take profit', style=plot.marker_style.CIRCLE, position=plot.marker_position.CENTER, size=5)
 @plot.line(title='Active entry trigger', color=color.AQUA, line_width=1)
 @plot.line(title='Active stop loss', color=color.RED, line_width=1)
 @plot.line(title='Active take profit forecast', color=color.YELLOW, line_width=1)
 def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_length, swing_length, minimum_analogs, minimum_followthrough_pct, minimum_reward_risk):
-    # Carry forecast levels forward, then expire them on stop, target, opposite
-    # reversal, or the forecast duration. MutSeries makes the plotted levels stable.
+    # Carry forecast levels forward, then expire them on stop, target, a new
+    # reversal candidate, or the forecast duration. MutSeries keeps them stable.
     entry_state = MutSeriesF.new(init=nan)
     stop_state = MutSeriesF.new(init=nan)
     target_state = MutSeriesF.new(init=nan)
@@ -38,6 +39,52 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
     direction_state[0] = direction_state[1]
     remaining_state[0] = remaining_state[1]
     activated_state[0] = activated_state[1]
+
+    # Remember the latest reversal candidate for a readable on-chart dashboard.
+    candidate_direction_state = MutSeriesF.new(init=0.0)
+    candidate_entry_state = MutSeriesF.new(init=nan)
+    candidate_stop_state = MutSeriesF.new(init=nan)
+    candidate_target_state = MutSeriesF.new(init=nan)
+    candidate_confidence_state = MutSeriesF.new(init=0.0)
+    candidate_analogs_state = MutSeriesF.new(init=0.0)
+    candidate_bars_state = MutSeriesF.new(init=0.0)
+    candidate_move_state = MutSeriesF.new(init=0.0)
+    candidate_age_state = MutSeriesF.new(init=0.0)
+    candidate_estimate_state = MutSeriesF.new(init=0.0)
+    candidate_reason_state = MutSeriesF.new(init=0.0)
+    candidate_direction_state[0] = candidate_direction_state[1]
+    candidate_entry_state[0] = candidate_entry_state[1]
+    candidate_stop_state[0] = candidate_stop_state[1]
+    candidate_target_state[0] = candidate_target_state[1]
+    candidate_confidence_state[0] = candidate_confidence_state[1]
+    candidate_analogs_state[0] = candidate_analogs_state[1]
+    candidate_bars_state[0] = candidate_bars_state[1]
+    candidate_move_state[0] = candidate_move_state[1]
+    candidate_age_state[0] = candidate_age_state[1]
+    candidate_estimate_state[0] = candidate_estimate_state[1]
+    candidate_reason_state[0] = candidate_reason_state[1]
+    if candidate_age_state[0] > 0.0:
+        candidate_age_state[0] -= 1.0
+    if candidate_age_state[0] <= 0.0:
+        candidate_direction_state[0] = 0.0
+        candidate_entry_state[0] = nan
+        candidate_stop_state[0] = nan
+        candidate_target_state[0] = nan
+        candidate_confidence_state[0] = 0.0
+        candidate_analogs_state[0] = 0.0
+        candidate_bars_state[0] = 0.0
+        candidate_move_state[0] = 0.0
+        candidate_estimate_state[0] = 0.0
+        candidate_reason_state[0] = 0.0
+
+    # Var preserves this relative-positioned label while the chart redraws bars.
+    dashboard = Var[LabelRel].new(LabelRel(
+        'Reversal Forecast',
+        RelativePosition(va.TOP, ha.RIGHT, 0.03, 0.98),
+        bg_color=color.NAVY(0.90),
+        text_color=color.WHITE,
+        font_size=12,
+    ))
 
     # All calculations are anchored to bar 1: the most recently CLOSED candle.
     signal_open = self.open[1]
@@ -135,9 +182,9 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
     analog_count = 0
     total_weight = 0.0
     successful_weight = 0.0
-    successful_move_weight = 0.0
-    successful_move_sum = 0.0
-    successful_duration_sum = 0.0
+    triggered_weight = 0.0
+    triggered_move_sum = 0.0
+    triggered_duration_sum = 0.0
     last_analog_offset = -1000000
 
     if atr_now > 0.0 and (bull_pattern > 0 or bear_pattern > 0):
@@ -317,22 +364,24 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
                             episode_duration = j
                             break
 
+                    if activated:
+                        triggered_weight += similarity
+                        triggered_move_sum += best_favorable * similarity
+                        triggered_duration_sum += float(episode_duration) * similarity
+
                     # Success means the entry activated and its historical TP was
                     # reached before the SL. Same-bar SL/TP ties count as losses.
                     if activated and outcome_decided and trade_success:
                         successful_weight += similarity
-                        successful_move_weight += similarity
-                        successful_move_sum += best_favorable * similarity
-                        successful_duration_sum += float(episode_duration) * similarity
 
     confidence = 0.0
     expected_move_atr = 0.0
     expected_bars = 0.0
     if total_weight > 0.0:
         confidence = 100.0 * successful_weight / total_weight
-    if successful_move_weight > 0.0:
-        expected_move_atr = successful_move_sum / successful_move_weight
-        expected_bars = successful_duration_sum / successful_move_weight
+    if triggered_weight > 0.0:
+        expected_move_atr = triggered_move_sum / triggered_weight
+        expected_bars = triggered_duration_sum / triggered_weight
 
     has_signal = bull_pattern > 0 or bear_pattern > 0
     is_bull = bull_pattern > 0
@@ -344,45 +393,50 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
     risk_in_atr = 0.0
     if atr_now > 0.0:
         risk_in_atr = abs(planned_entry - planned_stop) / atr_now
-    forecast_ready = has_signal and analog_count >= minimum_analogs and confidence >= float(minimum_followthrough_pct) and atr_now > 0.0 and successful_move_weight > 0.0 and expected_move_atr >= risk_in_atr * minimum_reward_risk
+    estimate_available = has_signal and atr_now > 0.0 and analog_count >= 2 and triggered_weight > 0.0 and expected_move_atr > 0.0 and expected_bars > 0.0
+    forecast_ready = estimate_available and analog_count >= minimum_analogs and confidence >= float(minimum_followthrough_pct) and expected_move_atr >= risk_in_atr * minimum_reward_risk
 
     entry_level = nan
     stop_level = nan
     target_level = nan
     bull_marker = nan
     bear_marker = nan
-    forecast_label = ''
+    buy_text = 'BUY'
+    sell_text = 'SELL'
 
     if has_signal:
         if is_bull:
             bull_marker = signal_low
-            forecast_label = 'BUY candidate'
         else:
             bear_marker = signal_high
-            forecast_label = 'SELL candidate'
-
-        if forecast_ready:
-            direction = 1.0
-            if not is_bull:
-                direction = -1.0
+        if atr_now > 0.0:
             entry_level = planned_entry
             stop_level = planned_stop
+        if estimate_available:
+            direction = 1.0 if is_bull else -1.0
             target_level = entry_level + direction * expected_move_atr * atr_now
-            bars_text = str(int(expected_bars + 0.5))
-            confidence_text = str(int(confidence + 0.5))
-            analog_text = str(analog_count)
-            move_text = str(expected_move_atr)
-            if is_bull:
-                forecast_label = 'BUY | analogs ' + analog_text + ' | follow-through ' + confidence_text + '% | about ' + bars_text + ' bars | +' + move_text + ' ATR'
-            else:
-                forecast_label = 'SELL | analogs ' + analog_text + ' | follow-through ' + confidence_text + '% | about ' + bars_text + ' bars | +' + move_text + ' ATR'
 
-    buy_text = 'BUY | no reliable forecast yet' if has_signal and is_bull else 'BUY'
-    sell_text = 'SELL | no reliable forecast yet' if has_signal and not is_bull else 'SELL'
-    if forecast_ready and is_bull:
-        buy_text = forecast_label
-    if forecast_ready and not is_bull:
-        sell_text = forecast_label
+        candidate_direction_state[0] = 1.0 if is_bull else -1.0
+        candidate_entry_state[0] = entry_level
+        candidate_stop_state[0] = stop_level
+        candidate_target_state[0] = target_level
+        candidate_confidence_state[0] = confidence
+        candidate_analogs_state[0] = float(analog_count)
+        candidate_bars_state[0] = expected_bars
+        candidate_move_state[0] = expected_move_atr
+        candidate_age_state[0] = float(max_horizon)
+        candidate_estimate_state[0] = 1.0 if estimate_available else 0.0
+        candidate_reason_state[0] = 0.0
+        if not estimate_available:
+            candidate_reason_state[0] = 1.0
+        elif analog_count < minimum_analogs:
+            candidate_reason_state[0] = 2.0
+        elif confidence < float(minimum_followthrough_pct):
+            candidate_reason_state[0] = 3.0
+        elif expected_move_atr < risk_in_atr * minimum_reward_risk:
+            candidate_reason_state[0] = 4.0
+        else:
+            candidate_reason_state[0] = 5.0
 
     # Update any existing forecast using only the just-closed candle.
     if remaining_state[0] > 0.0:
@@ -398,8 +452,7 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
                 hit_exit = True
             elif direction_state[0] < 0.0 and (self.high[1] >= stop_state[0] or self.low[1] <= target_state[0]):
                 hit_exit = True
-        opposite_signal = (direction_state[0] > 0.0 and bear_pattern > 0) or (direction_state[0] < 0.0 and bull_pattern > 0)
-        if hit_exit or opposite_signal or remaining_state[0] <= 0.0:
+        if hit_exit or has_signal or remaining_state[0] <= 0.0:
             entry_state[0] = nan
             stop_state[0] = nan
             target_state[0] = nan
@@ -407,8 +460,9 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
             remaining_state[0] = 0.0
             activated_state[0] = 0.0
 
-    # A fresh forecast replaces an older active setup.
-    if forecast_ready:
+    # A new historical estimate replaces an older active setup, even when its
+    # quality is low; the dashboard shows that quality explicitly.
+    if estimate_available:
         entry_state[0] = entry_level
         stop_state[0] = stop_level
         target_state[0] = target_level
@@ -418,8 +472,60 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
             remaining_state[0] = 1.0
         activated_state[0] = 0.0
 
-    # The signal label is placed back on its closed candle. Forecast levels stay
-    # visible until their stop, target, opposite reversal, or bar horizon occurs.
+    # A fixed-position dashboard makes signal direction and prices readable even
+    # when a chart marker is small. It shows the latest candidate for max_horizon bars.
+    dashboard_text = 'REVERSAL FORECAST\nNo recent reversal candidate'
+    if candidate_age_state[0] > 0.0 and candidate_direction_state[0] != 0.0:
+        side_text = 'BUY' if candidate_direction_state[0] > 0.0 else 'SELL'
+        status_text = 'Pattern found; no historical move estimate yet'
+        if candidate_reason_state[0] == 2.0:
+            status_text = 'Estimate only: fewer analogs than required'
+        elif candidate_reason_state[0] == 3.0:
+            status_text = 'Estimate only: follow-through below threshold'
+        elif candidate_reason_state[0] == 4.0:
+            status_text = 'Estimate only: expected reward/risk is low'
+        elif candidate_reason_state[0] == 5.0:
+            status_text = 'Historical setup meets selected filters'
+        if remaining_state[0] > 0.0 and activated_state[0] > 0.5:
+            status_text = status_text + ' | entry triggered'
+        elif remaining_state[0] > 0.0:
+            status_text = status_text + ' | waiting for entry'
+        elif candidate_estimate_state[0] > 0.5:
+            status_text = 'Forecast ended; latest estimate retained'
+
+        entry_text = 'n/a'
+        stop_text = 'n/a'
+        target_text = 'Not enough triggered analogs'
+        move_text = 'n/a'
+        bars_text = 'n/a'
+        if not isnan(candidate_entry_state[0]):
+            entry_text = str(round(candidate_entry_state[0], self.info.price_precision))
+        if not isnan(candidate_stop_state[0]):
+            stop_text = str(round(candidate_stop_state[0], self.info.price_precision))
+        if candidate_estimate_state[0] > 0.5:
+            target_text = str(round(candidate_target_state[0], self.info.price_precision))
+            move_text = '+' + str(round(candidate_move_state[0], 2)) + ' ATR'
+            bars_text = str(int(candidate_bars_state[0] + 0.5)) + ' bars'
+        dashboard_text = (
+            'REVERSAL FORECAST\n' +
+            'Signal: ' + side_text + '\n' +
+            'Status: ' + status_text + '\n' +
+            'Entry trigger: ' + entry_text + '\n' +
+            'Stop loss: ' + stop_text + '\n' +
+            'TP estimate: ' + target_text + '\n' +
+            'Expected move: ' + move_text + '\n' +
+            'Expected duration: ' + bars_text + '\n' +
+            'Historical follow-through: ' + str(int(candidate_confidence_state[0] + 0.5)) + '%\n' +
+            'Similar samples: ' + str(int(candidate_analogs_state[0] + 0.5)) +
+            ' | Expires in ' + str(int(candidate_age_state[0] + 0.5)) + ' bars'
+        )
+
+    if self.is_last_bar:
+        dashboard.get().text = dashboard_text
+        self.chart.draw(dashboard.get())
+
+    # The signal marker is a small dot; the dashboard shows readable direction,
+    # entry, stop, target estimate, historical follow-through and duration.
     return (
         plot.Marker(bull_marker, color=color.GREEN, text=buy_text, offset=-1),
         plot.Marker(bear_marker, color=color.RED, text=sell_text, offset=-1),

@@ -12,8 +12,8 @@ A custom Indie indicator that starts **after a reversal candle has closed**. It 
 2. Waits until the candle is closed before signalling; the setup marker is placed back on that candle.
 3. Compares the setup with earlier same-direction reversal candles, matching the prior trend, relative volume, distance from a recent swing, and candle family.
 4. Uses only historical setups whose full outcome window is already in the past. It simulates the same entry and stop rules, and counts a setup as a success only if its configured reward/risk target is reached before the stop. If one OHLC candle touches both, it conservatively counts as a loss. Similar samples are spaced at least one forecast horizon apart to reduce overlap.
-5. Estimates the weighted historical follow-through rate, average favorable movement among successful analogs, and typical bars from the reversal signal to the next opposite reversal.
-6. Shows an entry trigger, a stop beyond the reversal candle, and a target based on the similar historical moves. Weak forecasts are withheld when there are too few analogs, follow-through is below the selected threshold, or estimated reward/risk is too small. The candle itself is still labelled as a candidate.
+5. Estimates the similarity-weighted share of analogs that hit the configured TP before SL, average favorable excursion among triggered analogs, and typical bars from the reversal signal to the next opposite reversal.
+6. Shows a fixed-position chart dashboard with direction, status, entry, SL, estimated TP, expected ATR move, expected bars, follow-through, and sample count. If enough historical entries exist, it displays the estimate even when it is weak, and labels why it did not meet the selected quality filters; without enough triggered analogs, TP and duration are explicitly marked unavailable. Reversal markers are small dots rather than large blocks.
 
 ### Starting settings
 
