@@ -1,0 +1,432 @@
+# indie:lang_version = 5
+# Reversal Forecast — Exness Terminal / Indie
+# Signals use the last CLOSED candle (offset 1), so an unfinished candle cannot repaint.
+from math import nan
+from indie import indicator, param, plot, color, MutSeriesF
+
+
+@indicator('Reversal Forecast (Historical Analogs)', overlay_main_pane=True)
+@param.int('history_bars', default=600, min=100, max=2000, title='Historical lookback bars')
+@param.int('max_horizon', default=24, min=4, max=100, title='Maximum forecast horizon (bars)')
+@param.int('atr_length', default=14, min=2, max=100, title='ATR length')
+@param.int('trend_length', default=12, min=2, max=100, title='Prior trend length')
+@param.int('volume_length', default=20, min=2, max=200, title='Volume baseline length')
+@param.int('swing_length', default=20, min=3, max=200, title='Swing context length')
+@param.int('minimum_analogs', default=6, min=2, max=50, title='Minimum similar historical setups')
+@param.int('minimum_followthrough_pct', default=55, min=1, max=99, title='Minimum historical follow-through percent')
+@param.float('minimum_reward_risk', default=1.2, min=0.5, max=5.0, step=0.1, title='Minimum forecast reward/risk')
+@plot.marker(title='Bullish reversal forecast', style=plot.marker_style.LABEL, position=plot.marker_position.BELOW)
+@plot.marker(title='Bearish reversal forecast', style=plot.marker_style.LABEL, position=plot.marker_position.ABOVE)
+@plot.marker(title='Entry trigger', style=plot.marker_style.CIRCLE, position=plot.marker_position.CENTER)
+@plot.marker(title='Stop loss', style=plot.marker_style.CROSS, position=plot.marker_position.CENTER)
+@plot.marker(title='Take profit forecast', style=plot.marker_style.CIRCLE, position=plot.marker_position.CENTER)
+@plot.line(title='Active entry trigger', color=color.AQUA, line_width=1)
+@plot.line(title='Active stop loss', color=color.RED, line_width=1)
+@plot.line(title='Active take profit forecast', color=color.YELLOW, line_width=1)
+def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_length, swing_length, minimum_analogs, minimum_followthrough_pct, minimum_reward_risk):
+    # Carry forecast levels forward, then expire them on stop, target, opposite
+    # reversal, or the forecast duration. MutSeries makes the plotted levels stable.
+    entry_state = MutSeriesF.new(init=nan)
+    stop_state = MutSeriesF.new(init=nan)
+    target_state = MutSeriesF.new(init=nan)
+    direction_state = MutSeriesF.new(init=0.0)
+    remaining_state = MutSeriesF.new(init=0.0)
+    activated_state = MutSeriesF.new(init=0.0)
+    entry_state[0] = entry_state[1]
+    stop_state[0] = stop_state[1]
+    target_state[0] = target_state[1]
+    direction_state[0] = direction_state[1]
+    remaining_state[0] = remaining_state[1]
+    activated_state[0] = activated_state[1]
+
+    # All calculations are anchored to bar 1: the most recently CLOSED candle.
+    signal_open = self.open[1]
+    signal_high = self.high[1]
+    signal_low = self.low[1]
+    signal_close = self.close[1]
+    signal_range = signal_high - signal_low
+    signal_body = abs(signal_close - signal_open)
+
+    # Recognize engulfing candles and rejection-wick candles.
+    bull_pattern = 0
+    bear_pattern = 0
+    signal_body_low = signal_open
+    signal_body_high = signal_close
+    if signal_close < signal_open:
+        signal_body_low = signal_close
+        signal_body_high = signal_open
+    lower_wick = signal_body_low - signal_low
+    upper_wick = signal_high - signal_body_high
+
+    bull_engulf = signal_close > signal_open and self.close[2] < self.open[2] and signal_open <= self.close[2] and signal_close >= self.open[2]
+    bear_engulf = signal_close < signal_open and self.close[2] > self.open[2] and signal_open >= self.close[2] and signal_close <= self.open[2]
+    bull_pin = signal_range > 0.0 and signal_body > 0.0 and signal_close > signal_open and lower_wick >= signal_body * 2.0 and lower_wick >= signal_range * 0.50 and signal_close >= signal_low + signal_range * 0.65
+    bear_pin = signal_range > 0.0 and signal_body > 0.0 and signal_close < signal_open and upper_wick >= signal_body * 2.0 and upper_wick >= signal_range * 0.50 and signal_close <= signal_low + signal_range * 0.35
+    if bull_engulf:
+        bull_pattern = 1
+    elif bull_pin:
+        bull_pattern = 2
+    if bear_engulf:
+        bear_pattern = 1
+    elif bear_pin:
+        bear_pattern = 2
+
+    # Current setup context: volatility, prior trend, relative volume, swing location.
+    atr_now = 0.0
+    tr_sum = 0.0
+    for k in range(atr_length):
+        bar_shift = 1 + k
+        bar_range = self.high[bar_shift] - self.low[bar_shift]
+        prior_close = self.close[bar_shift + 1]
+        true_range = bar_range
+        if prior_close > self.high[bar_shift]:
+            true_range = prior_close - self.low[bar_shift]
+        elif prior_close < self.low[bar_shift]:
+            true_range = self.high[bar_shift] - prior_close
+        tr_sum += true_range
+    atr_now = tr_sum / float(atr_length)
+
+    volume_sum = 0.0
+    for k in range(volume_length):
+        volume_sum += self.volume[2 + k]
+    average_volume = volume_sum / float(volume_length)
+    volume_ratio = 1.0
+    if average_volume > 0.0 and self.volume[1] >= 0.0:
+        volume_ratio = self.volume[1] / average_volume
+
+    trend_feature = 0.0
+    if atr_now > 0.0:
+        if bull_pattern > 0:
+            trend_feature = (self.close[1 + trend_length] - signal_close) / atr_now
+        elif bear_pattern > 0:
+            trend_feature = (signal_close - self.close[1 + trend_length]) / atr_now
+
+    prior_swing_low = self.low[2]
+    prior_swing_high = self.high[2]
+    for k in range(1, swing_length):
+        if self.low[2 + k] < prior_swing_low:
+            prior_swing_low = self.low[2 + k]
+        if self.high[2 + k] > prior_swing_high:
+            prior_swing_high = self.high[2 + k]
+
+    location_feature = 0.0
+    if atr_now > 0.0:
+        if bull_pattern > 0:
+            location_feature = (signal_low - prior_swing_low) / atr_now
+        elif bear_pattern > 0:
+            location_feature = (prior_swing_high - signal_high) / atr_now
+
+    # Walk only older, fully observed reversal episodes. Each historical example's
+    # next max_horizon bars are already known; no future data enters this signal.
+    # Accepted analogs are separated by one horizon to reduce overlapping samples.
+    context_length = atr_length + 2
+    if volume_length + 2 > context_length:
+        context_length = volume_length + 2
+    if trend_length + 2 > context_length:
+        context_length = trend_length + 2
+    if swing_length + 2 > context_length:
+        context_length = swing_length + 2
+
+    history_end = history_bars
+    available_history = self.bar_count - context_length - 1
+    if available_history < history_end:
+        history_end = available_history
+
+    analog_count = 0
+    total_weight = 0.0
+    successful_weight = 0.0
+    successful_move_weight = 0.0
+    successful_move_sum = 0.0
+    successful_duration_sum = 0.0
+    last_analog_offset = -1000000
+
+    if atr_now > 0.0 and (bull_pattern > 0 or bear_pattern > 0):
+        for i in range(max_horizon + 2, history_end):
+            # Historical candidate pattern at offset i.
+            hist_open = self.open[i]
+            hist_high = self.high[i]
+            hist_low = self.low[i]
+            hist_close = self.close[i]
+            hist_range = hist_high - hist_low
+            hist_body = abs(hist_close - hist_open)
+            hist_body_low = hist_open
+            hist_body_high = hist_close
+            if hist_close < hist_open:
+                hist_body_low = hist_close
+                hist_body_high = hist_open
+            hist_lower_wick = hist_body_low - hist_low
+            hist_upper_wick = hist_high - hist_body_high
+            hist_bull_pattern = 0
+            hist_bear_pattern = 0
+
+            hist_bull_engulf = hist_close > hist_open and self.close[i + 1] < self.open[i + 1] and hist_open <= self.close[i + 1] and hist_close >= self.open[i + 1]
+            hist_bear_engulf = hist_close < hist_open and self.close[i + 1] > self.open[i + 1] and hist_open >= self.close[i + 1] and hist_close <= self.open[i + 1]
+            hist_bull_pin = hist_range > 0.0 and hist_body > 0.0 and hist_close > hist_open and hist_lower_wick >= hist_body * 2.0 and hist_lower_wick >= hist_range * 0.50 and hist_close >= hist_low + hist_range * 0.65
+            hist_bear_pin = hist_range > 0.0 and hist_body > 0.0 and hist_close < hist_open and hist_upper_wick >= hist_body * 2.0 and hist_upper_wick >= hist_range * 0.50 and hist_close <= hist_low + hist_range * 0.35
+            if hist_bull_engulf:
+                hist_bull_pattern = 1
+            elif hist_bull_pin:
+                hist_bull_pattern = 2
+            if hist_bear_engulf:
+                hist_bear_pattern = 1
+            elif hist_bear_pin:
+                hist_bear_pattern = 2
+
+            same_direction = (bull_pattern > 0 and hist_bull_pattern > 0) or (bear_pattern > 0 and hist_bear_pattern > 0)
+            if same_direction:
+                # Historical context features are calculated using only bars that
+                # existed at the time of that historical signal.
+                hist_tr_sum = 0.0
+                for k in range(atr_length):
+                    hist_shift = i + k
+                    hist_bar_range = self.high[hist_shift] - self.low[hist_shift]
+                    hist_prior_close = self.close[hist_shift + 1]
+                    hist_true_range = hist_bar_range
+                    if hist_prior_close > self.high[hist_shift]:
+                        hist_true_range = hist_prior_close - self.low[hist_shift]
+                    elif hist_prior_close < self.low[hist_shift]:
+                        hist_true_range = self.high[hist_shift] - hist_prior_close
+                    hist_tr_sum += hist_true_range
+                hist_atr = hist_tr_sum / float(atr_length)
+                hist_feature_atr = hist_atr
+                if hist_feature_atr <= 0.0:
+                    hist_feature_atr = 1.0
+
+                hist_volume_sum = 0.0
+                for k in range(volume_length):
+                    hist_volume_sum += self.volume[i + 1 + k]
+                hist_average_volume = hist_volume_sum / float(volume_length)
+                hist_volume_ratio = 1.0
+                if hist_average_volume > 0.0 and self.volume[i] >= 0.0:
+                    hist_volume_ratio = self.volume[i] / hist_average_volume
+
+                hist_trend_feature = 0.0
+                hist_location_feature = 0.0
+                hist_swing_low = self.low[i + 1]
+                hist_swing_high = self.high[i + 1]
+                for k in range(1, swing_length):
+                    if self.low[i + 1 + k] < hist_swing_low:
+                        hist_swing_low = self.low[i + 1 + k]
+                    if self.high[i + 1 + k] > hist_swing_high:
+                        hist_swing_high = self.high[i + 1 + k]
+
+                hist_direction = 1
+                hist_pattern_type = hist_bull_pattern
+                if hist_bull_pattern > 0:
+                    hist_trend_feature = (self.close[i + trend_length] - hist_close) / hist_feature_atr
+                    hist_location_feature = (hist_low - hist_swing_low) / hist_feature_atr
+                else:
+                    hist_direction = -1
+                    hist_pattern_type = hist_bear_pattern
+                    hist_trend_feature = (hist_close - self.close[i + trend_length]) / hist_feature_atr
+                    hist_location_feature = (hist_swing_high - hist_high) / hist_feature_atr
+
+                # Similarity score: same pattern family, prior trend, volume and location.
+                trend_difference = abs(hist_trend_feature - trend_feature)
+                volume_difference = abs(hist_volume_ratio - volume_ratio)
+                location_difference = abs(hist_location_feature - location_feature)
+                trend_similarity = 0.0
+                volume_similarity = 0.0
+                location_similarity = 0.0
+                pattern_similarity = 1.0
+                if trend_difference <= 0.5:
+                    trend_similarity = 1.0
+                elif trend_difference <= 1.5:
+                    trend_similarity = 0.5
+                if volume_difference <= 0.5:
+                    volume_similarity = 1.0
+                elif volume_difference <= 1.5:
+                    volume_similarity = 0.5
+                if location_difference <= 0.5:
+                    location_similarity = 1.0
+                elif location_difference <= 1.5:
+                    location_similarity = 0.5
+                if (bull_pattern > 0 and hist_pattern_type != bull_pattern) or (bear_pattern > 0 and hist_pattern_type != bear_pattern):
+                    pattern_similarity = 0.5
+                similarity = trend_similarity + volume_similarity + location_similarity + pattern_similarity
+
+                if similarity >= 2.0 and hist_atr > 0.0 and i - last_analog_offset >= max_horizon:
+                    last_analog_offset = i
+                    analog_count += 1
+                    total_weight += similarity
+
+                    # Historical entry trigger and path until an opposite reversal,
+                    # or the maximum horizon. Only completed past paths are sampled.
+                    hist_entry = hist_high + hist_atr * 0.03
+                    hist_stop = hist_low - hist_atr * 0.15
+                    if hist_direction < 0:
+                        hist_entry = hist_low - hist_atr * 0.03
+                        hist_stop = hist_high + hist_atr * 0.15
+                    hist_risk = abs(hist_entry - hist_stop)
+                    hist_target = hist_entry + float(hist_direction) * hist_risk * minimum_reward_risk
+                    activated = False
+                    outcome_decided = False
+                    trade_success = False
+                    best_favorable = 0.0
+                    episode_duration = max_horizon
+                    for j in range(1, max_horizon + 1):
+                        path_shift = i - j
+                        path_high = self.high[path_shift]
+                        path_low = self.low[path_shift]
+                        if not activated:
+                            if hist_direction > 0 and path_high >= hist_entry:
+                                activated = True
+                            elif hist_direction < 0 and path_low <= hist_entry:
+                                activated = True
+                        if activated:
+                            favorable = (path_high - hist_entry) / hist_atr
+                            stop_hit = path_low <= hist_stop
+                            target_hit = path_high >= hist_target
+                            if hist_direction < 0:
+                                favorable = (hist_entry - path_low) / hist_atr
+                                stop_hit = path_high >= hist_stop
+                                target_hit = path_low <= hist_target
+                            if favorable > best_favorable:
+                                best_favorable = favorable
+                            # If both SL and TP are inside one OHLC bar, assume the
+                            # stop happened first: the conservative resolution.
+                            if not outcome_decided:
+                                if stop_hit:
+                                    outcome_decided = True
+                                    trade_success = False
+                                elif target_hit:
+                                    outcome_decided = True
+                                    trade_success = True
+
+                        # Opposite engulfing or rejection-wick candle ends the episode.
+                        path_open = self.open[path_shift]
+                        path_close = self.close[path_shift]
+                        path_range = path_high - path_low
+                        path_body = abs(path_close - path_open)
+                        path_body_low = path_open
+                        path_body_high = path_close
+                        if path_close < path_open:
+                            path_body_low = path_close
+                            path_body_high = path_open
+                        path_lower_wick = path_body_low - path_low
+                        path_upper_wick = path_high - path_body_high
+                        opposite_engulf = False
+                        opposite_pin = False
+                        if hist_direction > 0:
+                            opposite_engulf = path_close < path_open and self.close[path_shift + 1] > self.open[path_shift + 1] and path_open >= self.close[path_shift + 1] and path_close <= self.open[path_shift + 1]
+                            opposite_pin = path_range > 0.0 and path_body > 0.0 and path_close < path_open and path_upper_wick >= path_body * 2.0 and path_upper_wick >= path_range * 0.50 and path_close <= path_low + path_range * 0.35
+                        else:
+                            opposite_engulf = path_close > path_open and self.close[path_shift + 1] < self.open[path_shift + 1] and path_open <= self.close[path_shift + 1] and path_close >= self.open[path_shift + 1]
+                            opposite_pin = path_range > 0.0 and path_body > 0.0 and path_close > path_open and path_lower_wick >= path_body * 2.0 and path_lower_wick >= path_range * 0.50 and path_close >= path_low + path_range * 0.65
+                        if opposite_engulf or opposite_pin:
+                            episode_duration = j
+                            break
+
+                    # Success means the entry activated and its historical TP was
+                    # reached before the SL. Same-bar SL/TP ties count as losses.
+                    if activated and outcome_decided and trade_success:
+                        successful_weight += similarity
+                        successful_move_weight += similarity
+                        successful_move_sum += best_favorable * similarity
+                        successful_duration_sum += float(episode_duration) * similarity
+
+    confidence = 0.0
+    expected_move_atr = 0.0
+    expected_bars = 0.0
+    if total_weight > 0.0:
+        confidence = 100.0 * successful_weight / total_weight
+    if successful_move_weight > 0.0:
+        expected_move_atr = successful_move_sum / successful_move_weight
+        expected_bars = successful_duration_sum / successful_move_weight
+
+    has_signal = bull_pattern > 0 or bear_pattern > 0
+    is_bull = bull_pattern > 0
+    planned_entry = signal_high + atr_now * 0.03
+    planned_stop = signal_low - atr_now * 0.15
+    if not is_bull:
+        planned_entry = signal_low - atr_now * 0.03
+        planned_stop = signal_high + atr_now * 0.15
+    risk_in_atr = 0.0
+    if atr_now > 0.0:
+        risk_in_atr = abs(planned_entry - planned_stop) / atr_now
+    forecast_ready = has_signal and analog_count >= minimum_analogs and confidence >= float(minimum_followthrough_pct) and atr_now > 0.0 and successful_move_weight > 0.0 and expected_move_atr >= risk_in_atr * minimum_reward_risk
+
+    entry_level = nan
+    stop_level = nan
+    target_level = nan
+    bull_marker = nan
+    bear_marker = nan
+    forecast_label = ''
+
+    if has_signal:
+        if is_bull:
+            bull_marker = signal_low
+            forecast_label = 'BUY candidate'
+        else:
+            bear_marker = signal_high
+            forecast_label = 'SELL candidate'
+
+        if forecast_ready:
+            direction = 1.0
+            if not is_bull:
+                direction = -1.0
+            entry_level = planned_entry
+            stop_level = planned_stop
+            target_level = entry_level + direction * expected_move_atr * atr_now
+            bars_text = str(int(expected_bars + 0.5))
+            confidence_text = str(int(confidence + 0.5))
+            analog_text = str(analog_count)
+            move_text = str(expected_move_atr)
+            if is_bull:
+                forecast_label = 'BUY | analogs ' + analog_text + ' | follow-through ' + confidence_text + '% | about ' + bars_text + ' bars | +' + move_text + ' ATR'
+            else:
+                forecast_label = 'SELL | analogs ' + analog_text + ' | follow-through ' + confidence_text + '% | about ' + bars_text + ' bars | +' + move_text + ' ATR'
+
+    buy_text = 'BUY | no reliable forecast yet' if has_signal and is_bull else 'BUY'
+    sell_text = 'SELL | no reliable forecast yet' if has_signal and not is_bull else 'SELL'
+    if forecast_ready and is_bull:
+        buy_text = forecast_label
+    if forecast_ready and not is_bull:
+        sell_text = forecast_label
+
+    # Update any existing forecast using only the just-closed candle.
+    if remaining_state[0] > 0.0:
+        remaining_state[0] -= 1.0
+        if activated_state[0] < 0.5:
+            if direction_state[0] > 0.0 and self.high[1] >= entry_state[0]:
+                activated_state[0] = 1.0
+            elif direction_state[0] < 0.0 and self.low[1] <= entry_state[0]:
+                activated_state[0] = 1.0
+        hit_exit = False
+        if activated_state[0] > 0.5:
+            if direction_state[0] > 0.0 and (self.low[1] <= stop_state[0] or self.high[1] >= target_state[0]):
+                hit_exit = True
+            elif direction_state[0] < 0.0 and (self.high[1] >= stop_state[0] or self.low[1] <= target_state[0]):
+                hit_exit = True
+        opposite_signal = (direction_state[0] > 0.0 and bear_pattern > 0) or (direction_state[0] < 0.0 and bull_pattern > 0)
+        if hit_exit or opposite_signal or remaining_state[0] <= 0.0:
+            entry_state[0] = nan
+            stop_state[0] = nan
+            target_state[0] = nan
+            direction_state[0] = 0.0
+            remaining_state[0] = 0.0
+            activated_state[0] = 0.0
+
+    # A fresh forecast replaces an older active setup.
+    if forecast_ready:
+        entry_state[0] = entry_level
+        stop_state[0] = stop_level
+        target_state[0] = target_level
+        direction_state[0] = 1.0 if is_bull else -1.0
+        remaining_state[0] = float(int(expected_bars + 0.5))
+        if remaining_state[0] < 1.0:
+            remaining_state[0] = 1.0
+        activated_state[0] = 0.0
+
+    # The signal label is placed back on its closed candle. Forecast levels stay
+    # visible until their stop, target, opposite reversal, or bar horizon occurs.
+    return (
+        plot.Marker(bull_marker, color=color.GREEN, text=buy_text, offset=-1),
+        plot.Marker(bear_marker, color=color.RED, text=sell_text, offset=-1),
+        plot.Marker(entry_level, color=color.AQUA, text='ENTRY'),
+        plot.Marker(stop_level, color=color.RED, text='SL'),
+        plot.Marker(target_level, color=color.YELLOW, text='TP forecast'),
+        entry_state[0],
+        stop_state[0],
+        target_state[0],
+    )
