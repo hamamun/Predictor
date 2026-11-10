@@ -104,6 +104,63 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
     last_variant_state[0] = last_variant_state[1]
     last_result_state[0] = last_result_state[1]
 
+    # A missing value must never become a numeric state. Price levels may be
+    # NaN, but counters, codes and display metrics are always finite.
+    if isnan(direction_state[0]):
+        direction_state[0] = 0.0
+    if isnan(remaining_state[0]):
+        remaining_state[0] = 0.0
+    if isnan(pending_direction_state[0]):
+        pending_direction_state[0] = 0.0
+    if isnan(pending_pattern_state[0]):
+        pending_pattern_state[0] = 0.0
+    if isnan(pending_variant_state[0]):
+        pending_variant_state[0] = 0.0
+    if isnan(pending_atr_state[0]):
+        pending_atr_state[0] = 0.0
+    if isnan(pending_volume_state[0]):
+        pending_volume_state[0] = 1.0
+    if isnan(pending_trend_state[0]):
+        pending_trend_state[0] = 0.0
+    if isnan(pending_location_state[0]):
+        pending_location_state[0] = 0.0
+    if isnan(pending_elapsed_state[0]):
+        pending_elapsed_state[0] = 0.0
+    if isnan(bull_cooldown_state[0]):
+        bull_cooldown_state[0] = 0.0
+    if isnan(bear_cooldown_state[0]):
+        bear_cooldown_state[0] = 0.0
+    if isnan(forecast_direction_state[0]):
+        forecast_direction_state[0] = 0.0
+    if isnan(forecast_pattern_state[0]):
+        forecast_pattern_state[0] = 0.0
+    if isnan(forecast_variant_state[0]):
+        forecast_variant_state[0] = 0.0
+    if isnan(forecast_confidence_state[0]):
+        forecast_confidence_state[0] = 0.0
+    if isnan(forecast_analogs_state[0]):
+        forecast_analogs_state[0] = 0.0
+    if isnan(forecast_bars_state[0]):
+        forecast_bars_state[0] = 0.0
+    if isnan(forecast_low_state[0]):
+        forecast_low_state[0] = 1.0
+    if isnan(forecast_high_state[0]):
+        forecast_high_state[0] = float(max_horizon)
+    if isnan(forecast_move_state[0]):
+        forecast_move_state[0] = 0.0
+    if isnan(forecast_estimate_state[0]):
+        forecast_estimate_state[0] = 0.0
+    if isnan(forecast_reason_state[0]):
+        forecast_reason_state[0] = 1.0
+    if isnan(last_direction_state[0]):
+        last_direction_state[0] = 0.0
+    if isnan(last_pattern_state[0]):
+        last_pattern_state[0] = 0.0
+    if isnan(last_variant_state[0]):
+        last_variant_state[0] = 0.0
+    if isnan(last_result_state[0]):
+        last_result_state[0] = 0.0
+
     if bull_cooldown_state[0] > 0.0:
         bull_cooldown_state[0] = bull_cooldown_state[0] - 1.0
     if bear_cooldown_state[0] > 0.0:
@@ -429,9 +486,9 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
                 confirmed_now = True
             if confirmed_now:
                 confirmed_signal = True
-                signal_direction = int(pending_direction_state[0] + 0.5)
-                signal_pattern = int(pending_pattern_state[0] + 0.5)
-                signal_variant = int(pending_variant_state[0] + 0.5)
+                signal_direction = int(0.0 if isnan(pending_direction_state[0]) else pending_direction_state[0] + 0.5)
+                signal_pattern = int(0.0 if isnan(pending_pattern_state[0]) else pending_pattern_state[0] + 0.5)
+                signal_variant = int(0.0 if isnan(pending_variant_state[0]) else pending_variant_state[0] + 0.5)
                 signal_break = pending_break_state[0]
                 signal_stop = pending_stop_state[0]
                 signal_marker = pending_marker_state[0]
@@ -442,7 +499,7 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
                 signal_entry = self.close[1]
                 if signal_direction > 0:
                     confirmed_bull_marker = self.low[1]
-                else:
+                elif signal_direction < 0:
                     confirmed_bear_marker = self.high[1]
                 if direction_state[0] != 0.0 and remaining_state[0] > 0.0:
                     if float(signal_direction) != direction_state[0]:
@@ -719,11 +776,21 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
                             hist_confirm_offset = i - 2
                     if hist_direction == signal_direction and hist_pattern > 0 and hist_confirm_offset > 0:
                         hist_entry = self.close[hist_confirm_offset]
-                        hist_risk = abs(hist_entry - hist_stop_level)
+                        hist_risk = 0.0
+                        if not isnan(hist_entry) and not isnan(hist_stop_level):
+                            hist_risk = abs(hist_entry - hist_stop_level)
+                        if isnan(hist_atr_feature):
+                            hist_atr_feature = 0.0
                         if hist_risk > 0.0 and hist_atr_feature > 0.0 and not isnan(hist_stop_level):
                             trend_difference = abs(hist_trend_feature - signal_trend)
                             volume_difference = abs(hist_volume_feature - signal_volume)
                             location_difference = abs(hist_location_feature - signal_location)
+                            if isnan(trend_difference):
+                                trend_difference = 3.0
+                            if isnan(volume_difference):
+                                volume_difference = 3.0
+                            if isnan(location_difference):
+                                location_difference = 3.0
                             trend_similarity = 0.0
                             volume_similarity = 0.0
                             location_similarity = 0.0
@@ -743,6 +810,8 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
                             if hist_pattern != signal_pattern:
                                 pattern_similarity = 0.5
                             similarity = trend_similarity + volume_similarity + location_similarity + pattern_similarity
+                            if isnan(similarity):
+                                similarity = 0.0
                             if similarity >= 2.0 and i - last_analog_offset >= max_horizon:
                                 last_analog_offset = i
                                 analog_count += 1
@@ -1017,26 +1086,58 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
                                 if outcome_decided and trade_success:
                                     successful_weight += similarity
 
+            if isnan(total_weight):
+                total_weight = 0.0
+            if isnan(successful_weight):
+                successful_weight = 0.0
+            if isnan(triggered_weight):
+                triggered_weight = 0.0
+            if isnan(triggered_move_sum):
+                triggered_move_sum = 0.0
+            if isnan(triggered_duration_sum):
+                triggered_duration_sum = 0.0
+            if isnan(triggered_duration2_sum):
+                triggered_duration2_sum = 0.0
             if total_weight > 0.0:
                 confidence = 100.0 * successful_weight / total_weight
+                if isnan(confidence):
+                    confidence = 0.0
             if triggered_weight > 0.0:
                 expected_move_atr = triggered_move_sum / triggered_weight
                 expected_bars = triggered_duration_sum / triggered_weight
+                if isnan(expected_move_atr):
+                    expected_move_atr = 0.0
+                if isnan(expected_bars):
+                    expected_bars = 0.0
                 duration_variance = triggered_duration2_sum / triggered_weight - expected_bars * expected_bars
+                if isnan(duration_variance):
+                    duration_variance = 0.0
                 if duration_variance < 0.0:
                     duration_variance = 0.0
                 duration_root = duration_variance
+                if isnan(duration_root):
+                    duration_root = 1.0
                 if duration_root < 1.0:
                     duration_root = 1.0
                 for q in range(12):
-                    duration_root = (duration_root + duration_variance / duration_root) * 0.5
+                    if not isnan(duration_root):
+                        if duration_root > 0.0:
+                            duration_root = (duration_root + duration_variance / duration_root) * 0.5
+                if isnan(duration_root):
+                    duration_root = 1.0
                 duration_spread = duration_root * 0.75
+                if isnan(duration_spread):
+                    duration_spread = 1.0
                 if duration_spread < 1.0:
                     duration_spread = 1.0
                 duration_low = float(int(expected_bars - duration_spread + 0.5))
                 duration_high = float(int(expected_bars + duration_spread + 0.5))
+                if isnan(duration_low):
+                    duration_low = 1.0
                 if duration_low < 1.0:
                     duration_low = 1.0
+                if isnan(duration_high):
+                    duration_high = float(max_horizon)
                 if duration_high > float(max_horizon):
                     duration_high = float(max_horizon)
                 if duration_high <= duration_low:
@@ -1044,7 +1145,9 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
                 if duration_high > float(max_horizon):
                     duration_high = float(max_horizon)
             risk_in_atr = abs(signal_entry - signal_stop) / signal_atr
-            estimate_available = analog_count >= 2 and triggered_weight > 0.0 and expected_move_atr > 0.0 and expected_bars > 0.0 and duration_high > 0.0
+            if isnan(risk_in_atr):
+                risk_in_atr = 0.0
+            estimate_available = analog_count >= 2 and triggered_weight > 0.0 and expected_move_atr > 0.0 and expected_bars > 0.0 and duration_high > 0.0 and not isnan(signal_entry) and not isnan(signal_stop)
             if estimate_available:
                 target_level = signal_entry + float(signal_direction) * expected_move_atr * signal_atr
                 forecast_ready = analog_count >= minimum_analogs and confidence >= float(minimum_followthrough_pct) and expected_move_atr >= risk_in_atr * minimum_reward_risk
@@ -1114,9 +1217,15 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
                 candidate_marker = cur_marker_level
 
     if self.is_last_bar:
+        price_precision_value = float(self.info.price_precision)
+        price_digits = 5
+        if not isnan(price_precision_value):
+            if price_precision_value >= 0.0:
+                if price_precision_value <= 10.0:
+                    price_digits = int(price_precision_value)
         pattern_main_text = '--'
-        pattern_main_text_code = int(forecast_pattern_state[0] + 0.5)
-        pattern_main_text_variant = int(forecast_variant_state[0] + 0.5)
+        pattern_main_text_code = int(0.0 if isnan(forecast_pattern_state[0]) else forecast_pattern_state[0] + 0.5)
+        pattern_main_text_variant = int(0.0 if isnan(forecast_variant_state[0]) else forecast_variant_state[0] + 0.5)
         if pattern_main_text_code == 1:
             if pattern_main_text_variant == 11:
                 pattern_main_text = 'Bullish engulfing'
@@ -1147,8 +1256,8 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
             else:
                 pattern_main_text = 'Star (incl. doji)'
         pattern_pending_text = '--'
-        pattern_pending_text_code = int(pending_pattern_state[0] + 0.5)
-        pattern_pending_text_variant = int(pending_variant_state[0] + 0.5)
+        pattern_pending_text_code = int(0.0 if isnan(pending_pattern_state[0]) else pending_pattern_state[0] + 0.5)
+        pattern_pending_text_variant = int(0.0 if isnan(pending_variant_state[0]) else pending_variant_state[0] + 0.5)
         if pattern_pending_text_code == 1:
             if pattern_pending_text_variant == 11:
                 pattern_pending_text = 'Bullish engulfing'
@@ -1179,8 +1288,8 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
             else:
                 pattern_pending_text = 'Star (incl. doji)'
         pattern_last_text = '--'
-        pattern_last_text_code = int(last_pattern_state[0] + 0.5)
-        pattern_last_text_variant = int(last_variant_state[0] + 0.5)
+        pattern_last_text_code = int(0.0 if isnan(last_pattern_state[0]) else last_pattern_state[0] + 0.5)
+        pattern_last_text_variant = int(0.0 if isnan(last_variant_state[0]) else last_variant_state[0] + 0.5)
         if pattern_last_text_code == 1:
             if pattern_last_text_variant == 11:
                 pattern_last_text = 'Bullish engulfing'
@@ -1226,7 +1335,7 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
         elif last_direction_state[0] != 0.0:
             pattern_text = pattern_last_text
 
-        pending_left = confirmation_bars - int(pending_elapsed_state[0] + 0.5)
+        pending_left = confirmation_bars - int(0.0 if isnan(pending_elapsed_state[0]) else pending_elapsed_state[0] + 0.5)
         if pending_left < 1:
             pending_left = 1
         pending_text = '--'
@@ -1235,7 +1344,7 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
             pending_text = pending_side + ' ' + pattern_pending_text + ' (' + str(pending_left) + ' bars left)'
 
         result_text = '--'
-        result_code = int(last_result_state[0] + 0.5)
+        result_code = int(0.0 if isnan(last_result_state[0]) else last_result_state[0] + 0.5)
         if result_code == 1:
             result_text = 'TP estimate reached'
         elif result_code == 2:
@@ -1267,7 +1376,7 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
 
         quality_text = 'No historical estimate'
         if forecast_estimate_state[0] > 0.5:
-            quality_code = int(forecast_reason_state[0] + 0.5)
+            quality_code = int(0.0 if isnan(forecast_reason_state[0]) else forecast_reason_state[0] + 0.5)
             if quality_code == 2:
                 quality_text = 'Low sample count'
             elif quality_code == 3:
@@ -1286,31 +1395,34 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
         expiry_text = '--'
         if direction_state[0] != 0.0 and remaining_state[0] > 0.0:
             if not isnan(forecast_entry_state[0]):
-                entry_text = str(round(forecast_entry_state[0], self.info.price_precision))
+                entry_text = str(round(forecast_entry_state[0], price_digits))
             if not isnan(forecast_stop_state[0]):
-                stop_text = str(round(forecast_stop_state[0], self.info.price_precision))
+                stop_text = str(round(forecast_stop_state[0], price_digits))
             if forecast_estimate_state[0] > 0.5:
-                target_text = str(round(forecast_target_state[0], self.info.price_precision))
-                move_text = '+' + str(round(forecast_move_state[0], 2)) + ' ATR'
-                bars_text = str(int(forecast_bars_state[0] + 0.5)) + ' bars (' + str(int(forecast_low_state[0] + 0.5)) + '-' + str(int(forecast_high_state[0] + 0.5)) + ')'
-                history_text = str(int(forecast_confidence_state[0] + 0.5)) + '% | ' + str(int(forecast_analogs_state[0] + 0.5)) + ' samples'
-            expiry_text = str(int(remaining_state[0] + 0.5)) + ' bars'
+                if not isnan(forecast_target_state[0]):
+                    target_text = str(round(forecast_target_state[0], price_digits))
+                if not isnan(forecast_move_state[0]):
+                    move_text = '+' + str(round(forecast_move_state[0], 2)) + ' ATR'
+                bars_text = str(int(0.0 if isnan(forecast_bars_state[0]) else forecast_bars_state[0] + 0.5)) + ' bars (' + str(int(0.0 if isnan(forecast_low_state[0]) else forecast_low_state[0] + 0.5)) + '-' + str(int(0.0 if isnan(forecast_high_state[0]) else forecast_high_state[0] + 0.5)) + ')'
+                history_text = str(int(0.0 if isnan(forecast_confidence_state[0]) else forecast_confidence_state[0] + 0.5)) + '% | ' + str(int(0.0 if isnan(forecast_analogs_state[0]) else forecast_analogs_state[0] + 0.5)) + ' samples'
+            expiry_text = str(int(0.0 if isnan(remaining_state[0]) else remaining_state[0] + 0.5)) + ' bars'
         elif pending_direction_state[0] != 0.0:
             if not isnan(pending_break_state[0]):
-                entry_text = str(round(pending_break_state[0], self.info.price_precision))
+                entry_text = str(round(pending_break_state[0], price_digits))
             if not isnan(pending_stop_state[0]):
-                stop_text = str(round(pending_stop_state[0], self.info.price_precision))
+                stop_text = str(round(pending_stop_state[0], price_digits))
             target_text = 'Awaiting confirmation'
         elif forecast_estimate_state[0] > 0.5:
             if not isnan(forecast_entry_state[0]):
-                entry_text = str(round(forecast_entry_state[0], self.info.price_precision))
+                entry_text = str(round(forecast_entry_state[0], price_digits))
             if not isnan(forecast_stop_state[0]):
-                stop_text = str(round(forecast_stop_state[0], self.info.price_precision))
+                stop_text = str(round(forecast_stop_state[0], price_digits))
             if not isnan(forecast_target_state[0]):
-                target_text = str(round(forecast_target_state[0], self.info.price_precision))
-            move_text = '+' + str(round(forecast_move_state[0], 2)) + ' ATR'
-            bars_text = str(int(forecast_bars_state[0] + 0.5)) + ' bars (' + str(int(forecast_low_state[0] + 0.5)) + '-' + str(int(forecast_high_state[0] + 0.5)) + ')'
-            history_text = str(int(forecast_confidence_state[0] + 0.5)) + '% | ' + str(int(forecast_analogs_state[0] + 0.5)) + ' samples'
+                target_text = str(round(forecast_target_state[0], price_digits))
+            if not isnan(forecast_move_state[0]):
+                move_text = '+' + str(round(forecast_move_state[0], 2)) + ' ATR'
+            bars_text = str(int(0.0 if isnan(forecast_bars_state[0]) else forecast_bars_state[0] + 0.5)) + ' bars (' + str(int(0.0 if isnan(forecast_low_state[0]) else forecast_low_state[0] + 0.5)) + '-' + str(int(0.0 if isnan(forecast_high_state[0]) else forecast_high_state[0] + 0.5)) + ')'
+            history_text = str(int(0.0 if isnan(forecast_confidence_state[0]) else forecast_confidence_state[0] + 0.5)) + '% | ' + str(int(0.0 if isnan(forecast_analogs_state[0]) else forecast_analogs_state[0] + 0.5)) + ' samples'
 
         dashboard.get().clear()
         dashboard.get().append(TableRow([
