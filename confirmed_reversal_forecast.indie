@@ -67,6 +67,8 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
     last_pattern_state = MutSeriesF.new(init=0.0)
     last_variant_state = MutSeriesF.new(init=0.0)
     last_result_state = MutSeriesF.new(init=0.0)
+    last_event_bar_state = MutSeriesF.new(init=0.0)
+    last_event_code_state = MutSeriesF.new(init=0.0)
     entry_state[0] = entry_state[1]
     stop_state[0] = stop_state[1]
     target_state[0] = target_state[1]
@@ -103,6 +105,8 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
     last_pattern_state[0] = last_pattern_state[1]
     last_variant_state[0] = last_variant_state[1]
     last_result_state[0] = last_result_state[1]
+    last_event_bar_state[0] = last_event_bar_state[1]
+    last_event_code_state[0] = last_event_code_state[1]
 
     # A missing value must never become a numeric state. Price levels may be
     # NaN, but counters, codes and display metrics are always finite.
@@ -160,6 +164,10 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
         last_variant_state[0] = 0.0
     if isnan(last_result_state[0]):
         last_result_state[0] = 0.0
+    if isnan(last_event_bar_state[0]):
+        last_event_bar_state[0] = 0.0
+    if isnan(last_event_code_state[0]):
+        last_event_code_state[0] = 0.0
 
     if bull_cooldown_state[0] > 0.0:
         bull_cooldown_state[0] = bull_cooldown_state[0] - 1.0
@@ -178,6 +186,9 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
         context_length = trend_length + 3
     if swing_length + 3 > context_length:
         context_length = swing_length + 3
+    bar_now_value = float(self.bar_count)
+    if isnan(bar_now_value):
+        bar_now_value = 0.0
     can_calculate = self.bar_count > context_length + 2
 
     cur_direction = 0
@@ -469,6 +480,8 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
                 end_code = 4.0
             if end_code > 0.0:
                 last_result_state[0] = end_code
+                last_event_code_state[0] = 4.0
+                last_event_bar_state[0] = bar_now_value
                 entry_state[0] = nan
                 stop_state[0] = nan
                 target_state[0] = nan
@@ -486,6 +499,8 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
                 confirmed_now = True
             if confirmed_now:
                 confirmed_signal = True
+                last_event_code_state[0] = 2.0
+                last_event_bar_state[0] = bar_now_value
                 signal_direction = int(0.0 if isnan(pending_direction_state[0]) else pending_direction_state[0] + 0.5)
                 signal_pattern = int(0.0 if isnan(pending_pattern_state[0]) else pending_pattern_state[0] + 0.5)
                 signal_variant = int(0.0 if isnan(pending_variant_state[0]) else pending_variant_state[0] + 0.5)
@@ -539,6 +554,8 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
                 pending_elapsed_state[0] = 0.0
                 pending_marker_state[0] = nan
                 skip_new_candidate_bar = True
+                last_event_code_state[0] = 3.0
+                last_event_bar_state[0] = bar_now_value
 
         # Historical analogs use the SAME pattern families, context and two-bar
         # confirmation rule. Only episodes whose whole outcome window is past are used.
@@ -1189,6 +1206,12 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
                 remaining_state[0] = duration_high
             else:
                 last_result_state[0] = 6.0
+                last_event_code_state[0] = 5.0
+                last_event_bar_state[0] = bar_now_value
+
+        if not skip_new_candidate_bar and pending_direction_state[0] != 0.0 and cur_direction != 0:
+            last_event_code_state[0] = 6.0
+            last_event_bar_state[0] = bar_now_value
 
         # Start one unconfirmed candidate per swing. A direction-specific cooldown
         # groups nearby patterns; an opposite-direction candidate remains possible.
@@ -1215,6 +1238,11 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
                 else:
                     bear_cooldown_state[0] = float(swing_length + confirmation_bars)
                 candidate_marker = cur_marker_level
+                last_event_code_state[0] = 1.0
+                last_event_bar_state[0] = bar_now_value
+            else:
+                last_event_code_state[0] = 6.0
+                last_event_bar_state[0] = bar_now_value
 
     if self.is_last_bar:
         price_precision_value = float(self.info.price_precision)
@@ -1320,17 +1348,30 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
             else:
                 pattern_last_text = 'Star (incl. doji)'
 
+        active_forecast = direction_state[0] != 0.0 and remaining_state[0] > 0.0
+        pending_candidate = pending_direction_state[0] != 0.0
+        historical_view = False
+        if not active_forecast:
+            if not pending_candidate:
+                historical_view = True
         side_text = '--'
-        if direction_state[0] != 0.0 and remaining_state[0] > 0.0:
+        if active_forecast:
             side_text = 'BUY' if forecast_direction_state[0] > 0.0 else 'SELL'
-        elif pending_direction_state[0] != 0.0:
-            side_text = 'BUY' if pending_direction_state[0] > 0.0 else 'SELL'
+        elif pending_candidate:
+            side_text = 'BUY?' if pending_direction_state[0] > 0.0 else 'SELL?'
         elif last_direction_state[0] != 0.0:
-            side_text = 'BUY' if last_direction_state[0] > 0.0 else 'SELL'
+            side_text = 'BUY (last)' if last_direction_state[0] > 0.0 else 'SELL (last)'
+        pattern_label = 'Last pattern' if historical_view else 'Pattern'
+        entry_label = 'Last entry' if historical_view else 'Entry / trigger'
+        stop_label = 'Last SL' if historical_view else 'Stop loss'
+        target_label = 'Last TP' if historical_view else 'TP estimate'
+        move_label = 'Last expected move' if historical_view else 'Expected move'
+        duration_label = 'Last duration' if historical_view else 'Expected duration'
+        quality_label = 'Last estimate quality' if historical_view else 'Estimate quality'
         pattern_text = '--'
-        if direction_state[0] != 0.0 and remaining_state[0] > 0.0:
+        if active_forecast:
             pattern_text = pattern_main_text
-        elif pending_direction_state[0] != 0.0:
+        elif pending_candidate:
             pattern_text = pattern_pending_text
         elif last_direction_state[0] != 0.0:
             pattern_text = pattern_last_text
@@ -1358,21 +1399,84 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
         elif result_code == 6:
             result_text = 'No historical estimate'
 
-        status_text = 'No recent confirmed reversal'
-        if direction_state[0] != 0.0 and remaining_state[0] > 0.0:
+        status_text = 'Waiting for new confirmed reversal'
+        if active_forecast:
             status_text = 'Forecast active | monitoring closed candles'
-            if pending_direction_state[0] != 0.0:
+            if pending_candidate:
                 pending_side = 'BUY' if pending_direction_state[0] > 0.0 else 'SELL'
                 status_text = 'Forecast active | ' + pending_side + ' candidate waiting (' + str(pending_left) + ' bars)'
-        elif pending_direction_state[0] != 0.0:
+        elif pending_candidate:
             pending_side = 'BUY' if pending_direction_state[0] > 0.0 else 'SELL'
             status_text = pending_side + ' candidate | waiting confirmation (' + str(pending_left) + ' bars)'
         elif result_code == 6:
-            status_text = 'Confirmed reversal | no historical estimate'
+            status_text = 'Waiting for new confirmed reversal | no historical estimate'
         elif result_code > 0:
-            status_text = 'Forecast ended | ' + result_text
+            status_text = 'Waiting for new confirmed reversal'
         elif forecast_estimate_state[0] > 0.5:
-            status_text = 'Forecast ended; estimate retained'
+            status_text = 'Waiting for new confirmed reversal | last estimate retained'
+
+        bar_now_display = bar_now_value
+        if isnan(bar_now_display):
+            bar_now_display = 0.0
+        data_text = 'Last closed candle | chart bar count ' + str(int(bar_now_display))
+        event_code = int(0.0 if isnan(last_event_code_state[0]) else last_event_code_state[0] + 0.5)
+        event_bar = last_event_bar_state[0]
+        bars_since_event = 0
+        if event_bar > 0.0:
+            bars_since_event = int(bar_now_display - event_bar + 0.5)
+        if bars_since_event < 0:
+            bars_since_event = 0
+        event_text = '--'
+        if event_code == 1:
+            event_text = 'Candidate appeared'
+        elif event_code == 2:
+            event_text = 'Forecast confirmed'
+        elif event_code == 3:
+            event_text = 'Candidate expired; no confirmation'
+        elif event_code == 4:
+            event_text = 'Forecast closed'
+        elif event_code == 5:
+            event_text = 'Confirmed reversal; no estimate'
+        elif event_code == 6:
+            event_text = 'Nearby pattern ignored'
+        last_update_text = result_text
+        if event_code == 3:
+            last_update_text = event_text
+        elif result_text == '--':
+            last_update_text = event_text
+        elif active_forecast and event_code == 2:
+            last_update_text = event_text
+        if last_update_text != '--':
+            if bars_since_event > 0:
+                last_update_text = last_update_text + ' | ' + str(bars_since_event) + ' bars ago'
+            else:
+                last_update_text = last_update_text + ' | this bar'
+        cooldown_active = False
+        if bull_cooldown_state[0] > 0.0:
+            cooldown_active = True
+        if bear_cooldown_state[0] > 0.0:
+            cooldown_active = True
+        no_signal_text = 'No qualifying setup on latest closed candle'
+        if active_forecast:
+            no_signal_text = 'Forecast active; no new reversal needed'
+            if pending_candidate:
+                no_signal_text = 'Forecast active; candidate awaiting confirmation'
+        elif pending_candidate:
+            no_signal_text = 'Candidate awaiting two-bar confirmation'
+        elif event_code == 3:
+            no_signal_text = 'Last candidate expired; no two-bar confirmation'
+            if cooldown_active:
+                no_signal_text = no_signal_text + ' | cooldown active'
+        elif result_code == 6:
+            no_signal_text = 'Confirmed reversal had no historical estimate; waiting for next setup'
+        elif result_code > 0:
+            no_signal_text = 'Previous forecast closed; waiting for new confirmed reversal'
+            if cooldown_active:
+                no_signal_text = no_signal_text + ' | cooldown active'
+        elif event_code == 6:
+            no_signal_text = 'Nearby pattern merged into existing swing'
+        elif cooldown_active:
+            no_signal_text = 'One-signal-per-swing cooldown active'
 
         quality_text = 'No historical estimate'
         if forecast_estimate_state[0] > 0.5:
@@ -1430,17 +1534,19 @@ def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_lengt
             TableCell(side_text, bg_color=color.NAVY(0.90)),
         ]))
         dashboard.get().add_row(['Status', status_text])
-        dashboard.get().add_row(['Pattern', pattern_text])
+        dashboard.get().add_row([pattern_label, pattern_text])
         dashboard.get().add_row(['Pending candidate', pending_text])
-        dashboard.get().add_row(['Entry / trigger', entry_text])
-        dashboard.get().add_row(['Stop loss', stop_text])
-        dashboard.get().add_row(['TP estimate', target_text])
-        dashboard.get().add_row(['Expected move', move_text])
-        dashboard.get().add_row(['Expected duration', bars_text])
-        dashboard.get().add_row(['Estimate quality', quality_text])
+        dashboard.get().add_row(['Data through', data_text])
+        dashboard.get().add_row([entry_label, entry_text])
+        dashboard.get().add_row([stop_label, stop_text])
+        dashboard.get().add_row([target_label, target_text])
+        dashboard.get().add_row([move_label, move_text])
+        dashboard.get().add_row([duration_label, bars_text])
+        dashboard.get().add_row([quality_label, quality_text])
         dashboard.get().add_row(['Historical follow-through / samples', history_text])
         dashboard.get().add_row(['Forecast expires in', expiry_text])
-        dashboard.get().add_row(['Last result', result_text])
+        dashboard.get().add_row(['No-signal reason', no_signal_text])
+        dashboard.get().add_row(['Last result / update', last_update_text])
         self.chart.draw(dashboard.get())
 
     # Break level plots on a new confirmed signal. Step plots keep active levels
