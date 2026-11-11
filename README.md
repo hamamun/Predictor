@@ -1,15 +1,16 @@
 # Reversal Forecast for Exness Terminal
 
-Two separate Indie indicators are available. Both start **after a reversal candle has closed**, use older comparable setups for historical estimates, and are designed for M5/M15 charts and other symbols.
+Three separate Indie indicators are available. All start **after a signal candle has closed**, use older comparable setups for historical estimates, and are designed for M5/M15 charts and other symbols.
 
 ## Choose an indicator
 
 | File | Status | Use it for |
 | --- | --- | --- |
 | `reversal_forecast.indie` | Original predictor, unchanged | The existing engulfing/pin-bar historical-analog forecast. |
-| `confirmed_reversal_forecast.indie` | New separate variant | A stricter confirmed-reversal forecast with fewer false reversal signals and a duration range. |
+| `confirmed_reversal_forecast.indie` | Second separate variant, unchanged | A stricter confirmed-reversal forecast with fewer false reversal signals and a duration range. |
+| `reversal_continuation_forecast.indie` | Third separate variant | One panel with one active forecast at a time: a confirmed reversal **or** a continuation forecast. |
 
-Copy only one file into one Exness custom-indicator script. The original file has deliberately been kept separate and unchanged.
+Copy only one file into one Exness custom-indicator script. The original predictor and the confirmed-reversal variant have deliberately been kept separate and unchanged.
 
 ## Confirmed Reversal Forecast — `confirmed_reversal_forecast.indie`
 
@@ -47,23 +48,63 @@ The upper-left dashboard below the indicator header shows status, pattern, any p
 
 The forecast horizon means **bars on the chart timeframe** (for example, 24 M5 bars or 24 M15 bars). All settings are adjustable in the indicator panel.
 
+## Reversal + Continuation Forecast — `reversal_continuation_forecast.indie`
+
+This third variant keeps the confirmed-reversal rules above and adds a **continuation forecast** that shares the same panel. It is enabled by default with the `Enable continuation forecasts` setting.
+
+### One active forecast only
+
+The panel never shows two forecasts or two TPs at once:
+
+1. A **confirmed reversal** populates the full panel: `Status`, `Pattern`, `Entry / trigger`, `Stop loss`, `TP estimate`, `Expected move`, `Expected duration`, `Estimate quality`, `Historical follow-through / samples`, `Forecast expires in`, `Data through`, `No-signal reason`, `Last result / update`.
+2. When that forecast closes — TP, SL, opposite confirmed reversal, replacement, or hard duration expiry — **all forecast levels are cleared**. Only `Status`, `No-signal reason`, `Last result / update` and `Data through` remain populated. There are **no retained `Last entry / Last SL / Last TP` labels**.
+3. If a **continuation structure** is found, the same full panel is repopulated with a **brand-new forecast**: new entry, new SL, new TP, new duration, new quality, new samples and new expiry. The old TP is not extended; the old forecast is already gone.
+4. As soon as a new **raw reversal candidate** appears, an active continuation forecast is cleared immediately. Entry/SL/TP stay blank until that reversal is confirmed, then the full panel is populated again as in step 1.
+5. `Last result / update` refreshes to the **newest event/result** with its age in bars, for example `Continuation forecast confirmed | this bar` or `Continuation duration limit reached; no extension | 12 bars ago`.
+
+### Continuation rule
+
+A continuation is declared on the latest **two closed candles**, with no extra confirmation candle:
+
+- **Bullish:** higher high + higher low, last candle `close > open`, body at least 55% of its range, close in the upper 30% of the range, and close above the prior close.
+- **Bearish:** lower high + lower low, last candle `close < open`, body at least 55% of its range, close in the lower 30% of the range, and close below the prior close.
+- Doji / small-body / inside candles are treated as **pause**, not continuation.
+- Volume above the recent baseline is a soft similarity score, not a hard gate.
+- A direction-specific cooldown prevents the same swing from producing repeated continuation forecasts.
+
+The reversal side still uses its original candidate → two-bar close-break confirmation. So continuation fires faster than reversal, by design.
+
+### Continuation estimates
+
+Continuation forecasts use **their own historical analog episodes**, built from the same two-bar structure, and measured with the same similarity-weighted statistics as the reversal engine: expected ATR move, duration range, follow-through percentage, sample count, quality and hard expiry. The stop is placed beyond the two-bar structure by a fraction of ATR; the TP comes from those historical continuation outcomes. There is no rolling target, no staged extension and no post-hoc conversion of a closed forecast into a win.
+
+A yellow dot still marks an unconfirmed reversal candidate; green/red dots mark confirmed reversals; an aqua dot marks a continuation forecast. Active levels use the same small step plots.
+
+### Starting settings
+
+Same as the confirmed variant, plus:
+
+- `Enable continuation forecasts`: **ON** by default.
+
+All lookbacks and durations are bar-based, so the same file works on M5, M15 or another attached chart timeframe. M15 is the recommended primary timeframe for the stricter reversal rules; M5 produces more candidates and more no-signal periods.
+
 ## Original predictor — `reversal_forecast.indie`
 
 The original indicator detects bullish/bearish engulfing and rejection-wick candles on closed bars, compares prior trend, relative volume, swing distance and candle family with older setups, and displays a single expected duration. It continues to use its original dashboard and forecast-level behavior.
 
 ## Volume note
 
-Both indicators normalize signal-candle volume against recent volume on the same symbol. Depending on the instrument and Exness feed, this may be tick volume rather than consolidated, market-wide traded volume. If volume is missing or unavailable, the similarity feature falls back to a neutral value.
+All three indicators normalize signal-candle volume against recent volume on the same symbol. Depending on the instrument and Exness feed, this may be tick volume rather than consolidated, market-wide traded volume. If volume is missing or unavailable, the similarity feature falls back to a neutral value.
 
 ## Add it to Exness Terminal
 
 1. Open Exness Terminal in a web browser and open an M5 or M15 chart.
 2. Open **Indicators** and choose **Create new script**.
-3. Copy all of either `reversal_forecast.indie` or `confirmed_reversal_forecast.indie` into the editor, save it, and add it to the chart.
+3. Copy all of one of `reversal_forecast.indie`, `confirmed_reversal_forecast.indie`, or `reversal_continuation_forecast.indie` into the editor, save it, and add it to the chart.
 4. Check that the script compiles in the actual Exness Indie runtime. Then inspect bullish and bearish examples on several symbols.
 
 The local repository has no Exness/Indie runtime, so local syntax and simulation checks cannot prove platform compilation. The target platform's compiler is the final compatibility check.
 
 ## Important interpretation
 
-The displayed follow-through percentage is a similarity-weighted historical statistic, not a guaranteed or automatically calibrated probability of a profitable trade. A duration range is an estimate of historical variation, not a deadline for price to reverse. The indicators do not place trades. Historical tests should include realistic spreads, slippage, and separate data for developing versus evaluating the rules.
+The displayed follow-through percentage is a similarity-weighted historical statistic, not a guaranteed or automatically calibrated probability of a profitable trade. A duration range is an estimate of historical variation, not a deadline for price to reverse. In the third variant, a continuation forecast is a **new forecast**, not an extension of the previous reversal forecast; closed results are never rewritten. The indicators do not place trades. Historical tests should include realistic spreads, slippage, and separate data for developing versus evaluating the rules.
