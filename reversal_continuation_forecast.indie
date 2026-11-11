@@ -1,0 +1,2030 @@
+# indie:lang_version = 5
+# Reversal + Continuation Forecast — Exness Terminal / Indie
+# A separate third variant. reversal_forecast.indie and
+# confirmed_reversal_forecast.indie are deliberately unchanged.
+# One panel holds one active forecast at a time: a confirmed reversal or a
+# continuation forecast. Closed forecasts are cleared, not retained.
+# All signal, confirmation, analog and forecast updates use CLOSED candles.
+from math import nan, isnan
+from indie import indicator, param, plot, color, MutSeriesF, Var
+from indie.drawings import Table, TableCell, TableRow, RelativePosition, vertical_anchor as va, horizontal_anchor as ha
+
+
+@indicator('Reversal + Continuation Forecast (Historical Analogs)', overlay_main_pane=True)
+@param.int('history_bars', default=600, min=100, max=2000, title='Historical lookback bars')
+@param.int('max_horizon', default=24, min=4, max=100, title='Maximum forecast horizon (bars)')
+@param.int('atr_length', default=14, min=2, max=100, title='ATR length')
+@param.int('trend_length', default=12, min=2, max=100, title='Prior trend length')
+@param.int('volume_length', default=20, min=2, max=200, title='Volume baseline length')
+@param.int('swing_length', default=20, min=3, max=200, title='Swing context length')
+@param.int('minimum_analogs', default=6, min=2, max=50, title='Minimum similar historical setups')
+@param.int('minimum_followthrough_pct', default=55, min=1, max=99, title='Minimum historical follow-through percent')
+@param.float('minimum_reward_risk', default=1.2, min=0.5, max=5.0, step=0.1, title='Minimum forecast reward/risk')
+@param.bool('continuation_check', default=True, title='Enable continuation forecasts')
+@plot.marker(title='Reversal candidate (unconfirmed)', style=plot.marker_style.CIRCLE, position=plot.marker_position.BELOW, size=1)
+@plot.marker(title='Confirmed bullish reversal', style=plot.marker_style.CIRCLE, position=plot.marker_position.BELOW, size=2)
+@plot.marker(title='Confirmed bearish reversal', style=plot.marker_style.CIRCLE, position=plot.marker_position.ABOVE, size=2)
+@plot.marker(title='Continuation forecast', style=plot.marker_style.CIRCLE, position=plot.marker_position.BELOW, size=2)
+@plot.steps(title='Forecast entry', color=color.AQUA, line_width=1)
+@plot.steps(title='Forecast stop loss', color=color.RED, line_width=1)
+@plot.steps(title='Forecast TP estimate', color=color.YELLOW, line_width=1)
+def Main(self, history_bars, max_horizon, atr_length, trend_length, volume_length, swing_length, minimum_analogs, minimum_followthrough_pct, minimum_reward_risk, continuation_check):
+    # Fixed, ATR-normalized rules: three reversal pattern families with
+    # two-bar confirmation, plus one two-bar continuation structure. The panel
+    # shows only one active forecast; a closed forecast is cleared, not retained.
+    minimum_trend_atr = 1.0
+    swing_tolerance_atr = 1.0
+    confirmation_bars = 2
+
+    entry_state = MutSeriesF.new(init=nan)
+    stop_state = MutSeriesF.new(init=nan)
+    target_state = MutSeriesF.new(init=nan)
+    direction_state = MutSeriesF.new(init=0.0)
+    remaining_state = MutSeriesF.new(init=0.0)
+    pending_direction_state = MutSeriesF.new(init=0.0)
+    pending_break_state = MutSeriesF.new(init=nan)
+    pending_stop_state = MutSeriesF.new(init=nan)
+    pending_pattern_state = MutSeriesF.new(init=0.0)
+    pending_variant_state = MutSeriesF.new(init=0.0)
+    pending_atr_state = MutSeriesF.new(init=0.0)
+    pending_volume_state = MutSeriesF.new(init=1.0)
+    pending_trend_state = MutSeriesF.new(init=0.0)
+    pending_location_state = MutSeriesF.new(init=0.0)
+    pending_elapsed_state = MutSeriesF.new(init=0.0)
+    pending_marker_state = MutSeriesF.new(init=nan)
+    bull_cooldown_state = MutSeriesF.new(init=0.0)
+    bear_cooldown_state = MutSeriesF.new(init=0.0)
+    forecast_direction_state = MutSeriesF.new(init=0.0)
+    forecast_pattern_state = MutSeriesF.new(init=0.0)
+    forecast_variant_state = MutSeriesF.new(init=0.0)
+    forecast_entry_state = MutSeriesF.new(init=nan)
+    forecast_stop_state = MutSeriesF.new(init=nan)
+    forecast_target_state = MutSeriesF.new(init=nan)
+    forecast_confidence_state = MutSeriesF.new(init=0.0)
+    forecast_analogs_state = MutSeriesF.new(init=0.0)
+    forecast_bars_state = MutSeriesF.new(init=0.0)
+    forecast_low_state = MutSeriesF.new(init=0.0)
+    forecast_high_state = MutSeriesF.new(init=0.0)
+    forecast_move_state = MutSeriesF.new(init=0.0)
+    forecast_estimate_state = MutSeriesF.new(init=0.0)
+    forecast_reason_state = MutSeriesF.new(init=1.0)
+    last_direction_state = MutSeriesF.new(init=0.0)
+    last_pattern_state = MutSeriesF.new(init=0.0)
+    last_variant_state = MutSeriesF.new(init=0.0)
+    last_result_state = MutSeriesF.new(init=0.0)
+    last_event_bar_state = MutSeriesF.new(init=0.0)
+    last_event_code_state = MutSeriesF.new(init=0.0)
+    forecast_kind_state = MutSeriesF.new(init=0.0)
+    last_closed_kind_state = MutSeriesF.new(init=0.0)
+    cont_cooldown_state = MutSeriesF.new(init=0.0)
+    entry_state[0] = entry_state[1]
+    stop_state[0] = stop_state[1]
+    target_state[0] = target_state[1]
+    direction_state[0] = direction_state[1]
+    remaining_state[0] = remaining_state[1]
+    pending_direction_state[0] = pending_direction_state[1]
+    pending_break_state[0] = pending_break_state[1]
+    pending_stop_state[0] = pending_stop_state[1]
+    pending_pattern_state[0] = pending_pattern_state[1]
+    pending_variant_state[0] = pending_variant_state[1]
+    pending_atr_state[0] = pending_atr_state[1]
+    pending_volume_state[0] = pending_volume_state[1]
+    pending_trend_state[0] = pending_trend_state[1]
+    pending_location_state[0] = pending_location_state[1]
+    pending_elapsed_state[0] = pending_elapsed_state[1]
+    pending_marker_state[0] = pending_marker_state[1]
+    bull_cooldown_state[0] = bull_cooldown_state[1]
+    bear_cooldown_state[0] = bear_cooldown_state[1]
+    forecast_direction_state[0] = forecast_direction_state[1]
+    forecast_pattern_state[0] = forecast_pattern_state[1]
+    forecast_variant_state[0] = forecast_variant_state[1]
+    forecast_entry_state[0] = forecast_entry_state[1]
+    forecast_stop_state[0] = forecast_stop_state[1]
+    forecast_target_state[0] = forecast_target_state[1]
+    forecast_confidence_state[0] = forecast_confidence_state[1]
+    forecast_analogs_state[0] = forecast_analogs_state[1]
+    forecast_bars_state[0] = forecast_bars_state[1]
+    forecast_low_state[0] = forecast_low_state[1]
+    forecast_high_state[0] = forecast_high_state[1]
+    forecast_move_state[0] = forecast_move_state[1]
+    forecast_estimate_state[0] = forecast_estimate_state[1]
+    forecast_reason_state[0] = forecast_reason_state[1]
+    last_direction_state[0] = last_direction_state[1]
+    last_pattern_state[0] = last_pattern_state[1]
+    last_variant_state[0] = last_variant_state[1]
+    last_result_state[0] = last_result_state[1]
+    last_event_bar_state[0] = last_event_bar_state[1]
+    last_event_code_state[0] = last_event_code_state[1]
+    forecast_kind_state[0] = forecast_kind_state[1]
+    last_closed_kind_state[0] = last_closed_kind_state[1]
+    cont_cooldown_state[0] = cont_cooldown_state[1]
+
+    # A missing value must never become a numeric state. Price levels may be
+    # NaN, but counters, codes and display metrics are always finite.
+    if isnan(direction_state[0]):
+        direction_state[0] = 0.0
+    if isnan(remaining_state[0]):
+        remaining_state[0] = 0.0
+    if isnan(pending_direction_state[0]):
+        pending_direction_state[0] = 0.0
+    if isnan(pending_pattern_state[0]):
+        pending_pattern_state[0] = 0.0
+    if isnan(pending_variant_state[0]):
+        pending_variant_state[0] = 0.0
+    if isnan(pending_atr_state[0]):
+        pending_atr_state[0] = 0.0
+    if isnan(pending_volume_state[0]):
+        pending_volume_state[0] = 1.0
+    if isnan(pending_trend_state[0]):
+        pending_trend_state[0] = 0.0
+    if isnan(pending_location_state[0]):
+        pending_location_state[0] = 0.0
+    if isnan(pending_elapsed_state[0]):
+        pending_elapsed_state[0] = 0.0
+    if isnan(bull_cooldown_state[0]):
+        bull_cooldown_state[0] = 0.0
+    if isnan(bear_cooldown_state[0]):
+        bear_cooldown_state[0] = 0.0
+    if isnan(forecast_direction_state[0]):
+        forecast_direction_state[0] = 0.0
+    if isnan(forecast_pattern_state[0]):
+        forecast_pattern_state[0] = 0.0
+    if isnan(forecast_variant_state[0]):
+        forecast_variant_state[0] = 0.0
+    if isnan(forecast_confidence_state[0]):
+        forecast_confidence_state[0] = 0.0
+    if isnan(forecast_analogs_state[0]):
+        forecast_analogs_state[0] = 0.0
+    if isnan(forecast_bars_state[0]):
+        forecast_bars_state[0] = 0.0
+    if isnan(forecast_low_state[0]):
+        forecast_low_state[0] = 1.0
+    if isnan(forecast_high_state[0]):
+        forecast_high_state[0] = float(max_horizon)
+    if isnan(forecast_move_state[0]):
+        forecast_move_state[0] = 0.0
+    if isnan(forecast_estimate_state[0]):
+        forecast_estimate_state[0] = 0.0
+    if isnan(forecast_reason_state[0]):
+        forecast_reason_state[0] = 1.0
+    if isnan(last_direction_state[0]):
+        last_direction_state[0] = 0.0
+    if isnan(last_pattern_state[0]):
+        last_pattern_state[0] = 0.0
+    if isnan(last_variant_state[0]):
+        last_variant_state[0] = 0.0
+    if isnan(last_result_state[0]):
+        last_result_state[0] = 0.0
+    if isnan(last_event_bar_state[0]):
+        last_event_bar_state[0] = 0.0
+    if isnan(last_event_code_state[0]):
+        last_event_code_state[0] = 0.0
+    if isnan(forecast_kind_state[0]):
+        forecast_kind_state[0] = 0.0
+    if isnan(last_closed_kind_state[0]):
+        last_closed_kind_state[0] = 0.0
+    if isnan(cont_cooldown_state[0]):
+        cont_cooldown_state[0] = 0.0
+
+    if bull_cooldown_state[0] > 0.0:
+        bull_cooldown_state[0] = bull_cooldown_state[0] - 1.0
+    if bear_cooldown_state[0] > 0.0:
+        bear_cooldown_state[0] = bear_cooldown_state[0] - 1.0
+    if cont_cooldown_state[0] > 0.0:
+        cont_cooldown_state[0] = cont_cooldown_state[0] - 1.0
+
+    # Keep the dashboard at the chart's upper-left, below the indicator legend.
+    dashboard = Var[Table].new(Table(
+        position=RelativePosition(va.TOP, ha.LEFT, 0.11, 0.02),
+    ))
+
+    context_length = atr_length + 3
+    if volume_length + 3 > context_length:
+        context_length = volume_length + 3
+    if trend_length + 3 > context_length:
+        context_length = trend_length + 3
+    if swing_length + 3 > context_length:
+        context_length = swing_length + 3
+    bar_now_value = float(self.bar_count)
+    if isnan(bar_now_value):
+        bar_now_value = 0.0
+    can_calculate = self.bar_count > context_length + 2
+
+    cur_direction = 0
+    cur_pattern = 0
+    cur_variant = 0
+    cur_break_level = nan
+    cur_stop_level = nan
+    cur_marker_level = nan
+    cur_atr_feature = 0.0
+    cur_volume_feature = 1.0
+    cur_trend_feature = 0.0
+    cur_location_feature = 0.0
+    cur_bull_trend = 0.0
+    cur_bear_trend = 0.0
+
+    continuation_signal = False
+    cont_direction = 0
+    cont_variant = 0
+    cont_entry = nan
+    cont_stop = nan
+    cont_break = nan
+    cont_marker = nan
+    cont_atr_feature = 0.0
+    cont_volume_feature = 1.0
+    cont_trend_feature = 0.0
+    cont_location_feature = 0.0
+
+    confirmed_signal = False
+    confirmed_bull_marker = nan
+    confirmed_bear_marker = nan
+    continuation_marker = nan
+    candidate_marker = nan
+    break_plot = False
+    skip_new_candidate_bar = False
+
+    signal_direction = 0
+    signal_pattern = 0
+    signal_variant = 0
+    signal_break = nan
+    signal_stop = nan
+    signal_marker = nan
+    signal_atr = 0.0
+    signal_volume = 1.0
+    signal_trend = 0.0
+    signal_location = 0.0
+    signal_entry = nan
+
+    analog_count = 0
+    total_weight = 0.0
+    triggered_weight = 0.0
+    successful_weight = 0.0
+    triggered_move_sum = 0.0
+    triggered_duration_sum = 0.0
+    triggered_duration2_sum = 0.0
+    confidence = 0.0
+    expected_move_atr = 0.0
+    expected_bars = 0.0
+    duration_low = 1.0
+    duration_high = float(max_horizon)
+    estimate_available = False
+    forecast_ready = False
+    reason_code = 1.0
+    target_level = nan
+    risk_in_atr = 0.0
+
+    if can_calculate:
+        cur_open = self.open[1]
+        cur_high = self.high[1]
+        cur_low = self.low[1]
+        cur_close = self.close[1]
+        cur_prior_open = self.open[1 + 1]
+        cur_prior_close = self.close[1 + 1]
+        cur_first_open = self.open[1 + 2]
+        cur_first_high = self.high[1 + 2]
+        cur_first_low = self.low[1 + 2]
+        cur_first_close = self.close[1 + 2]
+        cur_middle_open = self.open[1 + 1]
+        cur_middle_high = self.high[1 + 1]
+        cur_middle_low = self.low[1 + 1]
+        cur_middle_close = self.close[1 + 1]
+
+        cur_range = cur_high - cur_low
+        cur_body = abs(cur_close - cur_open)
+        cur_body_low = cur_open
+        cur_body_high = cur_close
+        if cur_close < cur_open:
+            cur_body_low = cur_close
+            cur_body_high = cur_open
+        cur_lower_wick = cur_body_low - cur_low
+        cur_upper_wick = cur_high - cur_body_high
+
+        cur_tr_sum = 0.0
+        for k in range(atr_length):
+            cur_shift = 1 + k
+            cur_bar_range = self.high[cur_shift] - self.low[cur_shift]
+            cur_prior_true_close = self.close[cur_shift + 1]
+            cur_true_range = cur_bar_range
+            if cur_prior_true_close > self.high[cur_shift]:
+                cur_true_range = cur_prior_true_close - self.low[cur_shift]
+            elif cur_prior_true_close < self.low[cur_shift]:
+                cur_true_range = self.high[cur_shift] - cur_prior_true_close
+            cur_tr_sum += cur_true_range
+        cur_atr = 0.0
+        if atr_length > 0:
+            cur_atr = cur_tr_sum / float(atr_length)
+
+        cur_volume_sum = 0.0
+        for k in range(volume_length):
+            cur_volume_sum += self.volume[1 + 1 + k]
+        cur_average_volume = cur_volume_sum / float(volume_length)
+        cur_volume_ratio = 1.0
+        if cur_average_volume > 0.0 and self.volume[1] >= 0.0:
+            cur_volume_ratio = self.volume[1] / cur_average_volume
+
+        cur_trend_start = self.close[1 + trend_length]
+        cur_trend_end = self.close[1 + 1]
+        cur_swing_low = self.low[1 + 1]
+        cur_swing_high = self.high[1 + 1]
+        for k in range(1, swing_length):
+            cur_swing_shift = 1 + 1 + k
+            if self.low[cur_swing_shift] < cur_swing_low:
+                cur_swing_low = self.low[cur_swing_shift]
+            if self.high[cur_swing_shift] > cur_swing_high:
+                cur_swing_high = self.high[cur_swing_shift]
+
+        cur_bull_trend = 0.0
+        cur_bear_trend = 0.0
+        cur_bull_context = False
+        cur_bear_context = False
+        if cur_atr > 0.0:
+            cur_bull_trend = (cur_trend_start - cur_trend_end) / cur_atr
+            cur_bear_trend = (cur_trend_end - cur_trend_start) / cur_atr
+            if cur_bull_trend >= minimum_trend_atr and cur_low <= cur_swing_low + swing_tolerance_atr * cur_atr:
+                cur_bull_context = True
+            if cur_bear_trend >= minimum_trend_atr and cur_high >= cur_swing_high - swing_tolerance_atr * cur_atr:
+                cur_bear_context = True
+
+        cur_small_body = cur_range > 0.0 and cur_body > 0.0 and cur_body <= cur_range * 0.35
+        cur_lower_shape = cur_small_body and cur_lower_wick >= cur_body * 2.0 and cur_lower_wick >= cur_range * 0.50 and cur_body_low >= cur_low + cur_range * 0.65
+        cur_upper_shape = cur_small_body and cur_upper_wick >= cur_body * 2.0 and cur_upper_wick >= cur_range * 0.50 and cur_body_high <= cur_low + cur_range * 0.35
+        cur_bull_engulf = cur_bull_context and cur_close > cur_open and cur_prior_close < cur_prior_open and cur_open <= cur_prior_close and cur_close >= cur_prior_open and cur_body > 0.0
+        cur_bear_engulf = cur_bear_context and cur_close < cur_open and cur_prior_close > cur_prior_open and cur_open >= cur_prior_close and cur_close <= cur_prior_open and cur_body > 0.0
+
+        cur_first_range = cur_first_high - cur_first_low
+        cur_first_body = abs(cur_first_close - cur_first_open)
+        cur_first_mid = (cur_first_open + cur_first_close) * 0.5
+        cur_middle_range = cur_middle_high - cur_middle_low
+        cur_middle_body = abs(cur_middle_close - cur_middle_open)
+        cur_third_range = cur_range
+        cur_third_body = cur_body
+        cur_star_low = cur_first_low
+        cur_star_high = cur_first_high
+        if cur_middle_low < cur_star_low:
+            cur_star_low = cur_middle_low
+        if cur_low < cur_star_low:
+            cur_star_low = cur_low
+        if cur_middle_high > cur_star_high:
+            cur_star_high = cur_middle_high
+        if cur_high > cur_star_high:
+            cur_star_high = cur_high
+        cur_doji_middle = cur_middle_range > 0.0 and cur_middle_body <= cur_middle_range * 0.10
+        cur_small_middle = cur_middle_range > 0.0 and cur_first_body > 0.0 and cur_third_body > 0.0 and cur_middle_body <= cur_middle_range * 0.30 and cur_middle_body <= cur_first_body * 0.60 and cur_middle_body <= cur_third_body * 0.60
+        cur_large_first = cur_first_range > 0.0 and cur_first_body >= cur_first_range * 0.50
+        cur_large_third = cur_third_range > 0.0 and cur_third_body >= cur_third_range * 0.50
+        cur_morning_star = cur_bull_context and cur_small_middle and cur_large_first and cur_large_third and cur_first_close < cur_first_open and cur_close > cur_open and cur_close >= cur_first_mid and cur_middle_low <= cur_first_low + cur_first_range * 0.25 and cur_middle_low <= cur_low + cur_third_range * 0.25
+        cur_evening_star = cur_bear_context and cur_small_middle and cur_large_first and cur_large_third and cur_first_close > cur_first_open and cur_close < cur_open and cur_close <= cur_first_mid and cur_middle_high >= cur_first_high - cur_first_range * 0.25 and cur_middle_high >= cur_high - cur_third_range * 0.25
+
+        cur_direction = 0
+        cur_pattern = 0
+        cur_variant = 0
+        cur_break_level = nan
+        cur_stop_level = nan
+        cur_marker_level = nan
+        cur_atr_feature = 0.0
+        cur_volume_feature = 1.0
+        cur_trend_feature = 0.0
+        cur_location_feature = 0.0
+        cur_bull_pattern = 0
+        cur_bear_pattern = 0
+        cur_bull_variant = 0
+        cur_bear_variant = 0
+        cur_bull_break = nan
+        cur_bear_break = nan
+        cur_bull_stop = nan
+        cur_bear_stop = nan
+        cur_bull_marker = nan
+        cur_bear_marker = nan
+
+        if cur_atr > 0.0:
+            if cur_morning_star:
+                cur_bull_pattern = 3
+                cur_bull_break = cur_high
+                cur_bull_stop = cur_star_low - cur_atr * 0.15
+                cur_bull_marker = cur_star_low
+                if cur_doji_middle:
+                    cur_bull_variant = 33
+                else:
+                    cur_bull_variant = 31
+            elif cur_bull_engulf:
+                cur_bull_pattern = 1
+                cur_bull_variant = 11
+                cur_bull_break = cur_high
+                cur_bull_stop = cur_low - cur_atr * 0.15
+                cur_bull_marker = cur_low
+            elif cur_bull_context and cur_lower_shape:
+                cur_bull_pattern = 2
+                cur_bull_variant = 21
+                cur_bull_break = cur_high
+                cur_bull_stop = cur_low - cur_atr * 0.15
+                cur_bull_marker = cur_low
+            elif cur_bull_context and cur_upper_shape:
+                cur_bull_pattern = 2
+                cur_bull_variant = 22
+                cur_bull_break = cur_high
+                cur_bull_stop = cur_low - cur_atr * 0.15
+                cur_bull_marker = cur_low
+
+            if cur_evening_star:
+                cur_bear_pattern = 3
+                cur_bear_break = cur_low
+                cur_bear_stop = cur_star_high + cur_atr * 0.15
+                cur_bear_marker = cur_star_high
+                if cur_doji_middle:
+                    cur_bear_variant = 34
+                else:
+                    cur_bear_variant = 32
+            elif cur_bear_engulf:
+                cur_bear_pattern = 1
+                cur_bear_variant = 12
+                cur_bear_break = cur_low
+                cur_bear_stop = cur_high + cur_atr * 0.15
+                cur_bear_marker = cur_high
+            elif cur_bear_context and cur_lower_shape:
+                cur_bear_pattern = 2
+                cur_bear_variant = 23
+                cur_bear_break = cur_low
+                cur_bear_stop = cur_high + cur_atr * 0.15
+                cur_bear_marker = cur_high
+            elif cur_bear_context and cur_upper_shape:
+                cur_bear_pattern = 2
+                cur_bear_variant = 24
+                cur_bear_break = cur_low
+                cur_bear_stop = cur_high + cur_atr * 0.15
+                cur_bear_marker = cur_high
+
+        cur_select = 0
+        if cur_bull_pattern > 0 and cur_bear_pattern > 0:
+            if cur_bull_trend > cur_bear_trend + 0.25:
+                cur_select = 1
+            elif cur_bear_trend > cur_bull_trend + 0.25:
+                cur_select = -1
+        elif cur_bull_pattern > 0:
+            cur_select = 1
+        elif cur_bear_pattern > 0:
+            cur_select = -1
+
+        if cur_select > 0:
+            cur_direction = 1
+            cur_pattern = cur_bull_pattern
+            cur_variant = cur_bull_variant
+            cur_break_level = cur_bull_break
+            cur_stop_level = cur_bull_stop
+            cur_marker_level = cur_bull_marker
+            cur_atr_feature = cur_atr
+            cur_volume_feature = cur_volume_ratio
+            cur_trend_feature = cur_bull_trend
+            cur_location_feature = (cur_low - cur_swing_low) / cur_atr
+        elif cur_select < 0:
+            cur_direction = -1
+            cur_pattern = cur_bear_pattern
+            cur_variant = cur_bear_variant
+            cur_break_level = cur_bear_break
+            cur_stop_level = cur_bear_stop
+            cur_marker_level = cur_bear_marker
+            cur_atr_feature = cur_atr
+            cur_volume_feature = cur_volume_ratio
+            cur_trend_feature = cur_bear_trend
+            cur_location_feature = (cur_swing_high - cur_high) / cur_atr
+
+        # Two-bar continuation structure on the latest two CLOSED bars.
+        if continuation_check and cur_atr > 0.0:
+            cont_open = self.open[1]
+            cont_high = self.high[1]
+            cont_low = self.low[1]
+            cont_close = self.close[1]
+            cont_prior_high = self.high[2]
+            cont_prior_low = self.low[2]
+            cont_prior_close = self.close[2]
+            cont_range = cont_high - cont_low
+            cont_body = abs(cont_close - cont_open)
+            cont_atr_feature = cur_atr
+            cont_volume_feature = cur_volume_ratio
+            cont_trend_start = self.close[1 + trend_length]
+            cont_trend_feature = (cont_close - cont_trend_start) / cur_atr
+            if isnan(cont_trend_feature):
+                cont_trend_feature = 0.0
+            if cont_range > 0.0 and cont_body > 0.0:
+                cont_close_pos = (cont_close - cont_low) / cont_range
+                cont_strong_body = cont_body >= cont_range * 0.55
+                cont_bull = cont_close > cont_open and cont_high > cont_prior_high and cont_low > cont_prior_low and cont_close > cont_prior_close and cont_strong_body and cont_close_pos >= 0.70
+                cont_bear = cont_close < cont_open and cont_high < cont_prior_high and cont_low < cont_prior_low and cont_close < cont_prior_close and cont_strong_body and cont_close_pos <= 0.30
+                if cont_bull:
+                    cont_direction = 1
+                    cont_variant = 41
+                    cont_entry = cont_close
+                    cont_stop = cont_prior_low - cur_atr * 0.5
+                    cont_break = cont_high
+                    cont_marker = cont_low
+                    cont_location_feature = (cont_low - cur_swing_low) / cur_atr
+                elif cont_bear:
+                    cont_direction = -1
+                    cont_variant = 42
+                    cont_entry = cont_close
+                    cont_stop = cont_prior_high + cur_atr * 0.5
+                    cont_break = cont_low
+                    cont_marker = cont_high
+                    cont_location_feature = (cur_swing_high - cont_high) / cur_atr
+                if isnan(cont_location_feature):
+                    cont_location_feature = 0.0
+
+        # Monitor the active forecast on the just-closed candle. Stop wins a
+        # same-bar stop/target tie. The upper duration range is a hard expiry.
+        if direction_state[0] != 0.0 and remaining_state[0] > 0.0:
+            remaining_state[0] = remaining_state[0] - 1.0
+            hit_stop = False
+            hit_target = False
+            if direction_state[0] > 0.0:
+                if self.low[1] <= stop_state[0]:
+                    hit_stop = True
+                elif self.high[1] >= target_state[0]:
+                    hit_target = True
+            else:
+                if self.high[1] >= stop_state[0]:
+                    hit_stop = True
+                elif self.low[1] <= target_state[0]:
+                    hit_target = True
+            end_code = 0.0
+            if hit_stop:
+                end_code = 2.0
+            elif hit_target:
+                end_code = 1.0
+            elif remaining_state[0] <= 0.0:
+                end_code = 4.0
+            if end_code > 0.0:
+                last_result_state[0] = end_code
+                last_closed_kind_state[0] = forecast_kind_state[0]
+                if end_code == 1.0:
+                    last_event_code_state[0] = 9.0
+                elif end_code == 2.0:
+                    last_event_code_state[0] = 10.0
+                else:
+                    last_event_code_state[0] = 12.0
+                last_event_bar_state[0] = bar_now_value
+                entry_state[0] = nan
+                stop_state[0] = nan
+                target_state[0] = nan
+                direction_state[0] = 0.0
+                remaining_state[0] = 0.0
+                forecast_kind_state[0] = 0.0
+                forecast_estimate_state[0] = 0.0
+                forecast_direction_state[0] = 0.0
+                forecast_pattern_state[0] = 0.0
+                forecast_variant_state[0] = 0.0
+                forecast_entry_state[0] = nan
+                forecast_stop_state[0] = nan
+                forecast_target_state[0] = nan
+                forecast_confidence_state[0] = 0.0
+                forecast_analogs_state[0] = 0.0
+                forecast_bars_state[0] = 0.0
+                forecast_low_state[0] = 1.0
+                forecast_high_state[0] = float(max_horizon)
+                forecast_move_state[0] = 0.0
+                forecast_reason_state[0] = 1.0
+                last_direction_state[0] = 0.0
+                last_pattern_state[0] = 0.0
+                last_variant_state[0] = 0.0
+                cont_cooldown_state[0] = float(swing_length + 2)
+
+        # Confirm a pending candidate using the first or second later closed candle.
+        # Nearby raw patterns are ignored while a candidate is pending (merged).
+        if pending_direction_state[0] != 0.0:
+            pending_elapsed_state[0] = pending_elapsed_state[0] + 1.0
+            confirmed_now = False
+            if pending_direction_state[0] > 0.0 and self.close[1] > pending_break_state[0]:
+                confirmed_now = True
+            elif pending_direction_state[0] < 0.0 and self.close[1] < pending_break_state[0]:
+                confirmed_now = True
+            if confirmed_now:
+                confirmed_signal = True
+                last_event_code_state[0] = 2.0
+                last_event_bar_state[0] = bar_now_value
+                signal_direction = int(0.0 if isnan(pending_direction_state[0]) else pending_direction_state[0] + 0.5)
+                signal_pattern = int(0.0 if isnan(pending_pattern_state[0]) else pending_pattern_state[0] + 0.5)
+                signal_variant = int(0.0 if isnan(pending_variant_state[0]) else pending_variant_state[0] + 0.5)
+                signal_break = pending_break_state[0]
+                signal_stop = pending_stop_state[0]
+                signal_marker = pending_marker_state[0]
+                signal_atr = pending_atr_state[0]
+                signal_volume = pending_volume_state[0]
+                signal_trend = pending_trend_state[0]
+                signal_location = pending_location_state[0]
+                signal_entry = self.close[1]
+                if signal_direction > 0:
+                    confirmed_bull_marker = self.low[1]
+                elif signal_direction < 0:
+                    confirmed_bear_marker = self.high[1]
+                if direction_state[0] != 0.0 and remaining_state[0] > 0.0:
+                    last_closed_kind_state[0] = forecast_kind_state[0]
+                    if float(signal_direction) != direction_state[0]:
+                        last_result_state[0] = 3.0
+                        last_event_code_state[0] = 11.0
+                    else:
+                        last_result_state[0] = 5.0
+                        last_event_code_state[0] = 13.0
+                    last_event_bar_state[0] = bar_now_value
+                    entry_state[0] = nan
+                    stop_state[0] = nan
+                    target_state[0] = nan
+                    direction_state[0] = 0.0
+                    remaining_state[0] = 0.0
+                    forecast_kind_state[0] = 0.0
+                    forecast_estimate_state[0] = 0.0
+                    forecast_direction_state[0] = 0.0
+                    forecast_pattern_state[0] = 0.0
+                    forecast_variant_state[0] = 0.0
+                    forecast_entry_state[0] = nan
+                    forecast_stop_state[0] = nan
+                    forecast_target_state[0] = nan
+                    forecast_confidence_state[0] = 0.0
+                    forecast_analogs_state[0] = 0.0
+                    forecast_bars_state[0] = 0.0
+                    forecast_low_state[0] = 1.0
+                    forecast_high_state[0] = float(max_horizon)
+                    forecast_move_state[0] = 0.0
+                    forecast_reason_state[0] = 1.0
+                    cont_cooldown_state[0] = float(swing_length + 2)
+                pending_direction_state[0] = 0.0
+                pending_break_state[0] = nan
+                pending_stop_state[0] = nan
+                pending_pattern_state[0] = 0.0
+                pending_variant_state[0] = 0.0
+                pending_atr_state[0] = 0.0
+                pending_volume_state[0] = 1.0
+                pending_trend_state[0] = 0.0
+                pending_location_state[0] = 0.0
+                pending_elapsed_state[0] = 0.0
+                pending_marker_state[0] = nan
+                last_direction_state[0] = float(signal_direction)
+                last_pattern_state[0] = float(signal_pattern)
+                last_variant_state[0] = float(signal_variant)
+                skip_new_candidate_bar = True
+            elif pending_elapsed_state[0] >= float(confirmation_bars):
+                pending_direction_state[0] = 0.0
+                pending_break_state[0] = nan
+                pending_stop_state[0] = nan
+                pending_pattern_state[0] = 0.0
+                pending_variant_state[0] = 0.0
+                pending_atr_state[0] = 0.0
+                pending_volume_state[0] = 1.0
+                pending_trend_state[0] = 0.0
+                pending_location_state[0] = 0.0
+                pending_elapsed_state[0] = 0.0
+                pending_marker_state[0] = nan
+                skip_new_candidate_bar = True
+                last_event_code_state[0] = 3.0
+                last_event_bar_state[0] = bar_now_value
+
+        # A continuation forecast starts only when no reversal was confirmed on
+        # this closed bar, no forecast/candidate is active, and cooldown is clear.
+        if continuation_check and cont_direction != 0 and not confirmed_signal and not isnan(cont_entry) and not isnan(cont_stop) and abs(cont_entry - cont_stop) > 0.0:
+            if direction_state[0] == 0.0 and remaining_state[0] <= 0.0 and pending_direction_state[0] == 0.0 and cont_cooldown_state[0] <= 0.0:
+                continuation_signal = True
+                continuation_marker = cont_marker
+                skip_new_candidate_bar = True
+
+        # Historical analogs use the SAME pattern families, context and two-bar
+        # confirmation rule. Only episodes whose whole outcome window is past are used.
+        if confirmed_signal and signal_atr > 0.0 and not isnan(signal_stop):
+            history_end = history_bars
+            available_history = self.bar_count - context_length - 1
+            if available_history < history_end:
+                history_end = available_history
+            history_start = max_horizon + confirmation_bars + 3
+            last_analog_offset = -1000000
+            if history_start < history_end and history_end > 0:
+                for i in range(history_start, history_end):
+                    hist_open = self.open[i]
+                    hist_high = self.high[i]
+                    hist_low = self.low[i]
+                    hist_close = self.close[i]
+                    hist_prior_open = self.open[i + 1]
+                    hist_prior_close = self.close[i + 1]
+                    hist_first_open = self.open[i + 2]
+                    hist_first_high = self.high[i + 2]
+                    hist_first_low = self.low[i + 2]
+                    hist_first_close = self.close[i + 2]
+                    hist_middle_open = self.open[i + 1]
+                    hist_middle_high = self.high[i + 1]
+                    hist_middle_low = self.low[i + 1]
+                    hist_middle_close = self.close[i + 1]
+
+                    hist_range = hist_high - hist_low
+                    hist_body = abs(hist_close - hist_open)
+                    hist_body_low = hist_open
+                    hist_body_high = hist_close
+                    if hist_close < hist_open:
+                        hist_body_low = hist_close
+                        hist_body_high = hist_open
+                    hist_lower_wick = hist_body_low - hist_low
+                    hist_upper_wick = hist_high - hist_body_high
+
+                    hist_tr_sum = 0.0
+                    for k in range(atr_length):
+                        hist_shift = i + k
+                        hist_bar_range = self.high[hist_shift] - self.low[hist_shift]
+                        hist_prior_true_close = self.close[hist_shift + 1]
+                        hist_true_range = hist_bar_range
+                        if hist_prior_true_close > self.high[hist_shift]:
+                            hist_true_range = hist_prior_true_close - self.low[hist_shift]
+                        elif hist_prior_true_close < self.low[hist_shift]:
+                            hist_true_range = self.high[hist_shift] - hist_prior_true_close
+                        hist_tr_sum += hist_true_range
+                    hist_atr = 0.0
+                    if atr_length > 0:
+                        hist_atr = hist_tr_sum / float(atr_length)
+
+                    hist_volume_sum = 0.0
+                    for k in range(volume_length):
+                        hist_volume_sum += self.volume[i + 1 + k]
+                    hist_average_volume = hist_volume_sum / float(volume_length)
+                    hist_volume_ratio = 1.0
+                    if hist_average_volume > 0.0 and self.volume[i] >= 0.0:
+                        hist_volume_ratio = self.volume[i] / hist_average_volume
+
+                    hist_trend_start = self.close[i + trend_length]
+                    hist_trend_end = self.close[i + 1]
+                    hist_swing_low = self.low[i + 1]
+                    hist_swing_high = self.high[i + 1]
+                    for k in range(1, swing_length):
+                        hist_swing_shift = i + 1 + k
+                        if self.low[hist_swing_shift] < hist_swing_low:
+                            hist_swing_low = self.low[hist_swing_shift]
+                        if self.high[hist_swing_shift] > hist_swing_high:
+                            hist_swing_high = self.high[hist_swing_shift]
+
+                    hist_bull_trend = 0.0
+                    hist_bear_trend = 0.0
+                    hist_bull_context = False
+                    hist_bear_context = False
+                    if hist_atr > 0.0:
+                        hist_bull_trend = (hist_trend_start - hist_trend_end) / hist_atr
+                        hist_bear_trend = (hist_trend_end - hist_trend_start) / hist_atr
+                        if hist_bull_trend >= minimum_trend_atr and hist_low <= hist_swing_low + swing_tolerance_atr * hist_atr:
+                            hist_bull_context = True
+                        if hist_bear_trend >= minimum_trend_atr and hist_high >= hist_swing_high - swing_tolerance_atr * hist_atr:
+                            hist_bear_context = True
+
+                    hist_small_body = hist_range > 0.0 and hist_body > 0.0 and hist_body <= hist_range * 0.35
+                    hist_lower_shape = hist_small_body and hist_lower_wick >= hist_body * 2.0 and hist_lower_wick >= hist_range * 0.50 and hist_body_low >= hist_low + hist_range * 0.65
+                    hist_upper_shape = hist_small_body and hist_upper_wick >= hist_body * 2.0 and hist_upper_wick >= hist_range * 0.50 and hist_body_high <= hist_low + hist_range * 0.35
+                    hist_bull_engulf = hist_bull_context and hist_close > hist_open and hist_prior_close < hist_prior_open and hist_open <= hist_prior_close and hist_close >= hist_prior_open and hist_body > 0.0
+                    hist_bear_engulf = hist_bear_context and hist_close < hist_open and hist_prior_close > hist_prior_open and hist_open >= hist_prior_close and hist_close <= hist_prior_open and hist_body > 0.0
+
+                    hist_first_range = hist_first_high - hist_first_low
+                    hist_first_body = abs(hist_first_close - hist_first_open)
+                    hist_first_mid = (hist_first_open + hist_first_close) * 0.5
+                    hist_middle_range = hist_middle_high - hist_middle_low
+                    hist_middle_body = abs(hist_middle_close - hist_middle_open)
+                    hist_third_range = hist_range
+                    hist_third_body = hist_body
+                    hist_star_low = hist_first_low
+                    hist_star_high = hist_first_high
+                    if hist_middle_low < hist_star_low:
+                        hist_star_low = hist_middle_low
+                    if hist_low < hist_star_low:
+                        hist_star_low = hist_low
+                    if hist_middle_high > hist_star_high:
+                        hist_star_high = hist_middle_high
+                    if hist_high > hist_star_high:
+                        hist_star_high = hist_high
+                    hist_doji_middle = hist_middle_range > 0.0 and hist_middle_body <= hist_middle_range * 0.10
+                    hist_small_middle = hist_middle_range > 0.0 and hist_first_body > 0.0 and hist_third_body > 0.0 and hist_middle_body <= hist_middle_range * 0.30 and hist_middle_body <= hist_first_body * 0.60 and hist_middle_body <= hist_third_body * 0.60
+                    hist_large_first = hist_first_range > 0.0 and hist_first_body >= hist_first_range * 0.50
+                    hist_large_third = hist_third_range > 0.0 and hist_third_body >= hist_third_range * 0.50
+                    hist_morning_star = hist_bull_context and hist_small_middle and hist_large_first and hist_large_third and hist_first_close < hist_first_open and hist_close > hist_open and hist_close >= hist_first_mid and hist_middle_low <= hist_first_low + hist_first_range * 0.25 and hist_middle_low <= hist_low + hist_third_range * 0.25
+                    hist_evening_star = hist_bear_context and hist_small_middle and hist_large_first and hist_large_third and hist_first_close > hist_first_open and hist_close < hist_open and hist_close <= hist_first_mid and hist_middle_high >= hist_first_high - hist_first_range * 0.25 and hist_middle_high >= hist_high - hist_third_range * 0.25
+
+                    hist_direction = 0
+                    hist_pattern = 0
+                    hist_variant = 0
+                    hist_break_level = nan
+                    hist_stop_level = nan
+                    hist_marker_level = nan
+                    hist_atr_feature = 0.0
+                    hist_volume_feature = 1.0
+                    hist_trend_feature = 0.0
+                    hist_location_feature = 0.0
+                    hist_bull_pattern = 0
+                    hist_bear_pattern = 0
+                    hist_bull_variant = 0
+                    hist_bear_variant = 0
+                    hist_bull_break = nan
+                    hist_bear_break = nan
+                    hist_bull_stop = nan
+                    hist_bear_stop = nan
+                    hist_bull_marker = nan
+                    hist_bear_marker = nan
+
+                    if hist_atr > 0.0:
+                        if hist_morning_star:
+                            hist_bull_pattern = 3
+                            hist_bull_break = hist_high
+                            hist_bull_stop = hist_star_low - hist_atr * 0.15
+                            hist_bull_marker = hist_star_low
+                            if hist_doji_middle:
+                                hist_bull_variant = 33
+                            else:
+                                hist_bull_variant = 31
+                        elif hist_bull_engulf:
+                            hist_bull_pattern = 1
+                            hist_bull_variant = 11
+                            hist_bull_break = hist_high
+                            hist_bull_stop = hist_low - hist_atr * 0.15
+                            hist_bull_marker = hist_low
+                        elif hist_bull_context and hist_lower_shape:
+                            hist_bull_pattern = 2
+                            hist_bull_variant = 21
+                            hist_bull_break = hist_high
+                            hist_bull_stop = hist_low - hist_atr * 0.15
+                            hist_bull_marker = hist_low
+                        elif hist_bull_context and hist_upper_shape:
+                            hist_bull_pattern = 2
+                            hist_bull_variant = 22
+                            hist_bull_break = hist_high
+                            hist_bull_stop = hist_low - hist_atr * 0.15
+                            hist_bull_marker = hist_low
+
+                        if hist_evening_star:
+                            hist_bear_pattern = 3
+                            hist_bear_break = hist_low
+                            hist_bear_stop = hist_star_high + hist_atr * 0.15
+                            hist_bear_marker = hist_star_high
+                            if hist_doji_middle:
+                                hist_bear_variant = 34
+                            else:
+                                hist_bear_variant = 32
+                        elif hist_bear_engulf:
+                            hist_bear_pattern = 1
+                            hist_bear_variant = 12
+                            hist_bear_break = hist_low
+                            hist_bear_stop = hist_high + hist_atr * 0.15
+                            hist_bear_marker = hist_high
+                        elif hist_bear_context and hist_lower_shape:
+                            hist_bear_pattern = 2
+                            hist_bear_variant = 23
+                            hist_bear_break = hist_low
+                            hist_bear_stop = hist_high + hist_atr * 0.15
+                            hist_bear_marker = hist_high
+                        elif hist_bear_context and hist_upper_shape:
+                            hist_bear_pattern = 2
+                            hist_bear_variant = 24
+                            hist_bear_break = hist_low
+                            hist_bear_stop = hist_high + hist_atr * 0.15
+                            hist_bear_marker = hist_high
+
+                    hist_select = 0
+                    if hist_bull_pattern > 0 and hist_bear_pattern > 0:
+                        if hist_bull_trend > hist_bear_trend + 0.25:
+                            hist_select = 1
+                        elif hist_bear_trend > hist_bull_trend + 0.25:
+                            hist_select = -1
+                    elif hist_bull_pattern > 0:
+                        hist_select = 1
+                    elif hist_bear_pattern > 0:
+                        hist_select = -1
+
+                    if hist_select > 0:
+                        hist_direction = 1
+                        hist_pattern = hist_bull_pattern
+                        hist_variant = hist_bull_variant
+                        hist_break_level = hist_bull_break
+                        hist_stop_level = hist_bull_stop
+                        hist_marker_level = hist_bull_marker
+                        hist_atr_feature = hist_atr
+                        hist_volume_feature = hist_volume_ratio
+                        hist_trend_feature = hist_bull_trend
+                        hist_location_feature = (hist_low - hist_swing_low) / hist_atr
+                    elif hist_select < 0:
+                        hist_direction = -1
+                        hist_pattern = hist_bear_pattern
+                        hist_variant = hist_bear_variant
+                        hist_break_level = hist_bear_break
+                        hist_stop_level = hist_bear_stop
+                        hist_marker_level = hist_bear_marker
+                        hist_atr_feature = hist_atr
+                        hist_volume_feature = hist_volume_ratio
+                        hist_trend_feature = hist_bear_trend
+                        hist_location_feature = (hist_swing_high - hist_high) / hist_atr
+                    hist_confirm_offset = 0
+                    if hist_direction > 0:
+                        if self.close[i - 1] > hist_break_level:
+                            hist_confirm_offset = i - 1
+                        elif self.close[i - 2] > hist_break_level:
+                            hist_confirm_offset = i - 2
+                    else:
+                        if self.close[i - 1] < hist_break_level:
+                            hist_confirm_offset = i - 1
+                        elif self.close[i - 2] < hist_break_level:
+                            hist_confirm_offset = i - 2
+                    if hist_direction == signal_direction and hist_pattern > 0 and hist_confirm_offset > 0:
+                        hist_entry = self.close[hist_confirm_offset]
+                        hist_risk = 0.0
+                        if not isnan(hist_entry) and not isnan(hist_stop_level):
+                            hist_risk = abs(hist_entry - hist_stop_level)
+                        if isnan(hist_atr_feature):
+                            hist_atr_feature = 0.0
+                        if hist_risk > 0.0 and hist_atr_feature > 0.0 and not isnan(hist_stop_level):
+                            trend_difference = abs(hist_trend_feature - signal_trend)
+                            volume_difference = abs(hist_volume_feature - signal_volume)
+                            location_difference = abs(hist_location_feature - signal_location)
+                            if isnan(trend_difference):
+                                trend_difference = 3.0
+                            if isnan(volume_difference):
+                                volume_difference = 3.0
+                            if isnan(location_difference):
+                                location_difference = 3.0
+                            trend_similarity = 0.0
+                            volume_similarity = 0.0
+                            location_similarity = 0.0
+                            if trend_difference <= 0.5:
+                                trend_similarity = 1.0
+                            elif trend_difference <= 1.5:
+                                trend_similarity = 0.5
+                            if volume_difference <= 0.5:
+                                volume_similarity = 1.0
+                            elif volume_difference <= 1.5:
+                                volume_similarity = 0.5
+                            if location_difference <= 0.5:
+                                location_similarity = 1.0
+                            elif location_difference <= 1.5:
+                                location_similarity = 0.5
+                            pattern_similarity = 1.0
+                            if hist_pattern != signal_pattern:
+                                pattern_similarity = 0.5
+                            similarity = trend_similarity + volume_similarity + location_similarity + pattern_similarity
+                            if isnan(similarity):
+                                similarity = 0.0
+                            if similarity >= 2.0 and i - last_analog_offset >= max_horizon:
+                                last_analog_offset = i
+                                analog_count += 1
+                                total_weight += similarity
+                                triggered_weight += similarity
+                                hist_target = hist_entry + float(hist_direction) * hist_risk * minimum_reward_risk
+                                best_favorable = 0.0
+                                outcome_decided = False
+                                trade_success = False
+                                episode_duration = float(max_horizon)
+                                opposite_found = False
+                                opp_pending_direction = 0
+                                opp_pending_break = nan
+                                opp_pending_age = 0
+                                for j in range(1, max_horizon + 1):
+                                    path_shift = hist_confirm_offset - j
+                                    path_high = self.high[path_shift]
+                                    path_low = self.low[path_shift]
+                                    favorable = (path_high - hist_entry) / hist_atr_feature
+                                    stop_hit = path_low <= hist_stop_level
+                                    target_hit = path_high >= hist_target
+                                    if hist_direction < 0:
+                                        favorable = (hist_entry - path_low) / hist_atr_feature
+                                        stop_hit = path_high >= hist_stop_level
+                                        target_hit = path_low <= hist_target
+                                    if favorable > best_favorable:
+                                        best_favorable = favorable
+                                    if not outcome_decided:
+                                        if stop_hit:
+                                            outcome_decided = True
+                                            trade_success = False
+                                        elif target_hit:
+                                            outcome_decided = True
+                                            trade_success = True
+                                    if opp_pending_direction != 0:
+                                        opp_pending_age += 1
+                                        opp_confirmed_now = False
+                                        if opp_pending_direction > 0 and self.close[path_shift] > opp_pending_break:
+                                            opp_confirmed_now = True
+                                        elif opp_pending_direction < 0 and self.close[path_shift] < opp_pending_break:
+                                            opp_confirmed_now = True
+                                        if opp_confirmed_now:
+                                            opposite_found = True
+                                            episode_duration = float(j)
+                                            break
+                                        if opp_pending_age >= confirmation_bars:
+                                            opp_pending_direction = 0
+                                            opp_pending_break = nan
+                                            opp_pending_age = 0
+                                    if opp_pending_direction == 0:
+                                        rev_open = self.open[path_shift]
+                                        rev_high = self.high[path_shift]
+                                        rev_low = self.low[path_shift]
+                                        rev_close = self.close[path_shift]
+                                        rev_prior_open = self.open[path_shift + 1]
+                                        rev_prior_close = self.close[path_shift + 1]
+                                        rev_first_open = self.open[path_shift + 2]
+                                        rev_first_high = self.high[path_shift + 2]
+                                        rev_first_low = self.low[path_shift + 2]
+                                        rev_first_close = self.close[path_shift + 2]
+                                        rev_middle_open = self.open[path_shift + 1]
+                                        rev_middle_high = self.high[path_shift + 1]
+                                        rev_middle_low = self.low[path_shift + 1]
+                                        rev_middle_close = self.close[path_shift + 1]
+
+                                        rev_range = rev_high - rev_low
+                                        rev_body = abs(rev_close - rev_open)
+                                        rev_body_low = rev_open
+                                        rev_body_high = rev_close
+                                        if rev_close < rev_open:
+                                            rev_body_low = rev_close
+                                            rev_body_high = rev_open
+                                        rev_lower_wick = rev_body_low - rev_low
+                                        rev_upper_wick = rev_high - rev_body_high
+
+                                        rev_tr_sum = 0.0
+                                        for k in range(atr_length):
+                                            rev_shift = path_shift + k
+                                            rev_bar_range = self.high[rev_shift] - self.low[rev_shift]
+                                            rev_prior_true_close = self.close[rev_shift + 1]
+                                            rev_true_range = rev_bar_range
+                                            if rev_prior_true_close > self.high[rev_shift]:
+                                                rev_true_range = rev_prior_true_close - self.low[rev_shift]
+                                            elif rev_prior_true_close < self.low[rev_shift]:
+                                                rev_true_range = self.high[rev_shift] - rev_prior_true_close
+                                            rev_tr_sum += rev_true_range
+                                        rev_atr = 0.0
+                                        if atr_length > 0:
+                                            rev_atr = rev_tr_sum / float(atr_length)
+
+                                        rev_volume_sum = 0.0
+                                        for k in range(volume_length):
+                                            rev_volume_sum += self.volume[path_shift + 1 + k]
+                                        rev_average_volume = rev_volume_sum / float(volume_length)
+                                        rev_volume_ratio = 1.0
+                                        if rev_average_volume > 0.0 and self.volume[path_shift] >= 0.0:
+                                            rev_volume_ratio = self.volume[path_shift] / rev_average_volume
+
+                                        rev_trend_start = self.close[path_shift + trend_length]
+                                        rev_trend_end = self.close[path_shift + 1]
+                                        rev_swing_low = self.low[path_shift + 1]
+                                        rev_swing_high = self.high[path_shift + 1]
+                                        for k in range(1, swing_length):
+                                            rev_swing_shift = path_shift + 1 + k
+                                            if self.low[rev_swing_shift] < rev_swing_low:
+                                                rev_swing_low = self.low[rev_swing_shift]
+                                            if self.high[rev_swing_shift] > rev_swing_high:
+                                                rev_swing_high = self.high[rev_swing_shift]
+
+                                        rev_bull_trend = 0.0
+                                        rev_bear_trend = 0.0
+                                        rev_bull_context = False
+                                        rev_bear_context = False
+                                        if rev_atr > 0.0:
+                                            rev_bull_trend = (rev_trend_start - rev_trend_end) / rev_atr
+                                            rev_bear_trend = (rev_trend_end - rev_trend_start) / rev_atr
+                                            if rev_bull_trend >= minimum_trend_atr and rev_low <= rev_swing_low + swing_tolerance_atr * rev_atr:
+                                                rev_bull_context = True
+                                            if rev_bear_trend >= minimum_trend_atr and rev_high >= rev_swing_high - swing_tolerance_atr * rev_atr:
+                                                rev_bear_context = True
+
+                                        rev_small_body = rev_range > 0.0 and rev_body > 0.0 and rev_body <= rev_range * 0.35
+                                        rev_lower_shape = rev_small_body and rev_lower_wick >= rev_body * 2.0 and rev_lower_wick >= rev_range * 0.50 and rev_body_low >= rev_low + rev_range * 0.65
+                                        rev_upper_shape = rev_small_body and rev_upper_wick >= rev_body * 2.0 and rev_upper_wick >= rev_range * 0.50 and rev_body_high <= rev_low + rev_range * 0.35
+                                        rev_bull_engulf = rev_bull_context and rev_close > rev_open and rev_prior_close < rev_prior_open and rev_open <= rev_prior_close and rev_close >= rev_prior_open and rev_body > 0.0
+                                        rev_bear_engulf = rev_bear_context and rev_close < rev_open and rev_prior_close > rev_prior_open and rev_open >= rev_prior_close and rev_close <= rev_prior_open and rev_body > 0.0
+
+                                        rev_first_range = rev_first_high - rev_first_low
+                                        rev_first_body = abs(rev_first_close - rev_first_open)
+                                        rev_first_mid = (rev_first_open + rev_first_close) * 0.5
+                                        rev_middle_range = rev_middle_high - rev_middle_low
+                                        rev_middle_body = abs(rev_middle_close - rev_middle_open)
+                                        rev_third_range = rev_range
+                                        rev_third_body = rev_body
+                                        rev_star_low = rev_first_low
+                                        rev_star_high = rev_first_high
+                                        if rev_middle_low < rev_star_low:
+                                            rev_star_low = rev_middle_low
+                                        if rev_low < rev_star_low:
+                                            rev_star_low = rev_low
+                                        if rev_middle_high > rev_star_high:
+                                            rev_star_high = rev_middle_high
+                                        if rev_high > rev_star_high:
+                                            rev_star_high = rev_high
+                                        rev_doji_middle = rev_middle_range > 0.0 and rev_middle_body <= rev_middle_range * 0.10
+                                        rev_small_middle = rev_middle_range > 0.0 and rev_first_body > 0.0 and rev_third_body > 0.0 and rev_middle_body <= rev_middle_range * 0.30 and rev_middle_body <= rev_first_body * 0.60 and rev_middle_body <= rev_third_body * 0.60
+                                        rev_large_first = rev_first_range > 0.0 and rev_first_body >= rev_first_range * 0.50
+                                        rev_large_third = rev_third_range > 0.0 and rev_third_body >= rev_third_range * 0.50
+                                        rev_morning_star = rev_bull_context and rev_small_middle and rev_large_first and rev_large_third and rev_first_close < rev_first_open and rev_close > rev_open and rev_close >= rev_first_mid and rev_middle_low <= rev_first_low + rev_first_range * 0.25 and rev_middle_low <= rev_low + rev_third_range * 0.25
+                                        rev_evening_star = rev_bear_context and rev_small_middle and rev_large_first and rev_large_third and rev_first_close > rev_first_open and rev_close < rev_open and rev_close <= rev_first_mid and rev_middle_high >= rev_first_high - rev_first_range * 0.25 and rev_middle_high >= rev_high - rev_third_range * 0.25
+
+                                        rev_direction = 0
+                                        rev_pattern = 0
+                                        rev_variant = 0
+                                        rev_break_level = nan
+                                        rev_stop_level = nan
+                                        rev_marker_level = nan
+                                        rev_atr_feature = 0.0
+                                        rev_volume_feature = 1.0
+                                        rev_trend_feature = 0.0
+                                        rev_location_feature = 0.0
+                                        rev_bull_pattern = 0
+                                        rev_bear_pattern = 0
+                                        rev_bull_variant = 0
+                                        rev_bear_variant = 0
+                                        rev_bull_break = nan
+                                        rev_bear_break = nan
+                                        rev_bull_stop = nan
+                                        rev_bear_stop = nan
+                                        rev_bull_marker = nan
+                                        rev_bear_marker = nan
+
+                                        if rev_atr > 0.0:
+                                            if rev_morning_star:
+                                                rev_bull_pattern = 3
+                                                rev_bull_break = rev_high
+                                                rev_bull_stop = rev_star_low - rev_atr * 0.15
+                                                rev_bull_marker = rev_star_low
+                                                if rev_doji_middle:
+                                                    rev_bull_variant = 33
+                                                else:
+                                                    rev_bull_variant = 31
+                                            elif rev_bull_engulf:
+                                                rev_bull_pattern = 1
+                                                rev_bull_variant = 11
+                                                rev_bull_break = rev_high
+                                                rev_bull_stop = rev_low - rev_atr * 0.15
+                                                rev_bull_marker = rev_low
+                                            elif rev_bull_context and rev_lower_shape:
+                                                rev_bull_pattern = 2
+                                                rev_bull_variant = 21
+                                                rev_bull_break = rev_high
+                                                rev_bull_stop = rev_low - rev_atr * 0.15
+                                                rev_bull_marker = rev_low
+                                            elif rev_bull_context and rev_upper_shape:
+                                                rev_bull_pattern = 2
+                                                rev_bull_variant = 22
+                                                rev_bull_break = rev_high
+                                                rev_bull_stop = rev_low - rev_atr * 0.15
+                                                rev_bull_marker = rev_low
+
+                                            if rev_evening_star:
+                                                rev_bear_pattern = 3
+                                                rev_bear_break = rev_low
+                                                rev_bear_stop = rev_star_high + rev_atr * 0.15
+                                                rev_bear_marker = rev_star_high
+                                                if rev_doji_middle:
+                                                    rev_bear_variant = 34
+                                                else:
+                                                    rev_bear_variant = 32
+                                            elif rev_bear_engulf:
+                                                rev_bear_pattern = 1
+                                                rev_bear_variant = 12
+                                                rev_bear_break = rev_low
+                                                rev_bear_stop = rev_high + rev_atr * 0.15
+                                                rev_bear_marker = rev_high
+                                            elif rev_bear_context and rev_lower_shape:
+                                                rev_bear_pattern = 2
+                                                rev_bear_variant = 23
+                                                rev_bear_break = rev_low
+                                                rev_bear_stop = rev_high + rev_atr * 0.15
+                                                rev_bear_marker = rev_high
+                                            elif rev_bear_context and rev_upper_shape:
+                                                rev_bear_pattern = 2
+                                                rev_bear_variant = 24
+                                                rev_bear_break = rev_low
+                                                rev_bear_stop = rev_high + rev_atr * 0.15
+                                                rev_bear_marker = rev_high
+
+                                        rev_select = 0
+                                        if rev_bull_pattern > 0 and rev_bear_pattern > 0:
+                                            if rev_bull_trend > rev_bear_trend + 0.25:
+                                                rev_select = 1
+                                            elif rev_bear_trend > rev_bull_trend + 0.25:
+                                                rev_select = -1
+                                        elif rev_bull_pattern > 0:
+                                            rev_select = 1
+                                        elif rev_bear_pattern > 0:
+                                            rev_select = -1
+
+                                        if rev_select > 0:
+                                            rev_direction = 1
+                                            rev_pattern = rev_bull_pattern
+                                            rev_variant = rev_bull_variant
+                                            rev_break_level = rev_bull_break
+                                            rev_stop_level = rev_bull_stop
+                                            rev_marker_level = rev_bull_marker
+                                            rev_atr_feature = rev_atr
+                                            rev_volume_feature = rev_volume_ratio
+                                            rev_trend_feature = rev_bull_trend
+                                            rev_location_feature = (rev_low - rev_swing_low) / rev_atr
+                                        elif rev_select < 0:
+                                            rev_direction = -1
+                                            rev_pattern = rev_bear_pattern
+                                            rev_variant = rev_bear_variant
+                                            rev_break_level = rev_bear_break
+                                            rev_stop_level = rev_bear_stop
+                                            rev_marker_level = rev_bear_marker
+                                            rev_atr_feature = rev_atr
+                                            rev_volume_feature = rev_volume_ratio
+                                            rev_trend_feature = rev_bear_trend
+                                            rev_location_feature = (rev_swing_high - rev_high) / rev_atr
+                                        if rev_direction == -hist_direction and rev_pattern > 0 and not isnan(rev_break_level):
+                                            opp_pending_direction = rev_direction
+                                            opp_pending_break = rev_break_level
+                                            opp_pending_age = 0
+                                if not opposite_found:
+                                    episode_duration = float(max_horizon)
+                                triggered_move_sum += best_favorable * similarity
+                                triggered_duration_sum += episode_duration * similarity
+                                triggered_duration2_sum += episode_duration * episode_duration * similarity
+                                if outcome_decided and trade_success:
+                                    successful_weight += similarity
+
+            if isnan(total_weight):
+                total_weight = 0.0
+            if isnan(successful_weight):
+                successful_weight = 0.0
+            if isnan(triggered_weight):
+                triggered_weight = 0.0
+            if isnan(triggered_move_sum):
+                triggered_move_sum = 0.0
+            if isnan(triggered_duration_sum):
+                triggered_duration_sum = 0.0
+            if isnan(triggered_duration2_sum):
+                triggered_duration2_sum = 0.0
+            if total_weight > 0.0:
+                confidence = 100.0 * successful_weight / total_weight
+                if isnan(confidence):
+                    confidence = 0.0
+            if triggered_weight > 0.0:
+                expected_move_atr = triggered_move_sum / triggered_weight
+                expected_bars = triggered_duration_sum / triggered_weight
+                if isnan(expected_move_atr):
+                    expected_move_atr = 0.0
+                if isnan(expected_bars):
+                    expected_bars = 0.0
+                duration_variance = triggered_duration2_sum / triggered_weight - expected_bars * expected_bars
+                if isnan(duration_variance):
+                    duration_variance = 0.0
+                if duration_variance < 0.0:
+                    duration_variance = 0.0
+                duration_root = duration_variance
+                if isnan(duration_root):
+                    duration_root = 1.0
+                if duration_root < 1.0:
+                    duration_root = 1.0
+                for q in range(12):
+                    if not isnan(duration_root):
+                        if duration_root > 0.0:
+                            duration_root = (duration_root + duration_variance / duration_root) * 0.5
+                if isnan(duration_root):
+                    duration_root = 1.0
+                duration_spread = duration_root * 0.75
+                if isnan(duration_spread):
+                    duration_spread = 1.0
+                if duration_spread < 1.0:
+                    duration_spread = 1.0
+                duration_low = float(int(expected_bars - duration_spread + 0.5))
+                duration_high = float(int(expected_bars + duration_spread + 0.5))
+                if isnan(duration_low):
+                    duration_low = 1.0
+                if duration_low < 1.0:
+                    duration_low = 1.0
+                if isnan(duration_high):
+                    duration_high = float(max_horizon)
+                if duration_high > float(max_horizon):
+                    duration_high = float(max_horizon)
+                if duration_high <= duration_low:
+                    duration_high = duration_low + 1.0
+                if duration_high > float(max_horizon):
+                    duration_high = float(max_horizon)
+            risk_in_atr = abs(signal_entry - signal_stop) / signal_atr
+            if isnan(risk_in_atr):
+                risk_in_atr = 0.0
+            estimate_available = analog_count >= 2 and triggered_weight > 0.0 and expected_move_atr > 0.0 and expected_bars > 0.0 and duration_high > 0.0 and not isnan(signal_entry) and not isnan(signal_stop)
+            if estimate_available:
+                target_level = signal_entry + float(signal_direction) * expected_move_atr * signal_atr
+                forecast_ready = analog_count >= minimum_analogs and confidence >= float(minimum_followthrough_pct) and expected_move_atr >= risk_in_atr * minimum_reward_risk
+                reason_code = 5.0
+                if not forecast_ready:
+                    if analog_count < minimum_analogs:
+                        reason_code = 2.0
+                    elif confidence < float(minimum_followthrough_pct):
+                        reason_code = 3.0
+                    elif expected_move_atr < risk_in_atr * minimum_reward_risk:
+                        reason_code = 4.0
+            else:
+                reason_code = 1.0
+
+        # Continuation forecasts use their OWN historical analog episodes: the
+        # same two-bar structure, measured with the same weighted statistics.
+        if continuation_signal and cont_atr_feature > 0.0 and not isnan(cont_stop):
+            signal_direction = cont_direction
+            signal_pattern = 4
+            signal_variant = cont_variant
+            signal_break = cont_break
+            signal_stop = cont_stop
+            signal_marker = cont_marker
+            signal_atr = cont_atr_feature
+            signal_volume = cont_volume_feature
+            signal_trend = cont_trend_feature
+            signal_location = cont_location_feature
+            signal_entry = cont_entry
+            if isnan(signal_volume):
+                signal_volume = 1.0
+            if isnan(signal_trend):
+                signal_trend = 0.0
+            if isnan(signal_location):
+                signal_location = 0.0
+            analog_count = 0
+            total_weight = 0.0
+            triggered_weight = 0.0
+            successful_weight = 0.0
+            triggered_move_sum = 0.0
+            triggered_duration_sum = 0.0
+            triggered_duration2_sum = 0.0
+            confidence = 0.0
+            expected_move_atr = 0.0
+            expected_bars = 0.0
+            duration_low = 1.0
+            duration_high = float(max_horizon)
+            estimate_available = False
+            forecast_ready = False
+            reason_code = 1.0
+            target_level = nan
+            history_end = history_bars
+            available_history = self.bar_count - context_length - 1
+            if available_history < history_end:
+                history_end = available_history
+            history_start = max_horizon + 3
+            last_analog_offset = -1000000
+            if history_start < history_end and history_end > 0:
+                for i in range(history_start, history_end):
+                    ca_open = self.open[i]
+                    ca_high = self.high[i]
+                    ca_low = self.low[i]
+                    ca_close = self.close[i]
+                    ca_prior_high = self.high[i + 1]
+                    ca_prior_low = self.low[i + 1]
+                    ca_prior_close = self.close[i + 1]
+                    ca_range = ca_high - ca_low
+                    ca_body = abs(ca_close - ca_open)
+                    ca_direction = 0
+                    if ca_range > 0.0 and ca_body > 0.0:
+                        ca_close_pos = (ca_close - ca_low) / ca_range
+                        ca_strong = ca_body >= ca_range * 0.55
+                        ca_bull = ca_close > ca_open and ca_high > ca_prior_high and ca_low > ca_prior_low and ca_close > ca_prior_close and ca_strong and ca_close_pos >= 0.70
+                        ca_bear = ca_close < ca_open and ca_high < ca_prior_high and ca_low < ca_prior_low and ca_close < ca_prior_close and ca_strong and ca_close_pos <= 0.30
+                        if ca_bull and signal_direction > 0:
+                            ca_direction = 1
+                        elif ca_bear and signal_direction < 0:
+                            ca_direction = -1
+                    if ca_direction != 0:
+                        ca_tr_sum = 0.0
+                        for k in range(atr_length):
+                            ca_shift = i + k
+                            ca_bar_range = self.high[ca_shift] - self.low[ca_shift]
+                            ca_prior_true_close = self.close[ca_shift + 1]
+                            ca_true_range = ca_bar_range
+                            if ca_prior_true_close > self.high[ca_shift]:
+                                ca_true_range = ca_prior_true_close - self.low[ca_shift]
+                            elif ca_prior_true_close < self.low[ca_shift]:
+                                ca_true_range = self.high[ca_shift] - ca_prior_true_close
+                            ca_tr_sum += ca_true_range
+                        ca_atr = 0.0
+                        if atr_length > 0:
+                            ca_atr = ca_tr_sum / float(atr_length)
+                        ca_volume_sum = 0.0
+                        for k in range(volume_length):
+                            ca_volume_sum += self.volume[i + 1 + k]
+                        ca_average_volume = ca_volume_sum / float(volume_length)
+                        ca_volume_ratio = 1.0
+                        if ca_average_volume > 0.0 and self.volume[i] >= 0.0:
+                            ca_volume_ratio = self.volume[i] / ca_average_volume
+                        ca_trend_feature = 0.0
+                        if ca_atr > 0.0:
+                            ca_trend_feature = (self.close[i] - self.close[i + trend_length]) / ca_atr
+                        if isnan(ca_trend_feature):
+                            ca_trend_feature = 0.0
+                        ca_swing_low = self.low[i + 1]
+                        ca_swing_high = self.high[i + 1]
+                        for k in range(1, swing_length):
+                            ca_swing_shift = i + 1 + k
+                            if self.low[ca_swing_shift] < ca_swing_low:
+                                ca_swing_low = self.low[ca_swing_shift]
+                            if self.high[ca_swing_shift] > ca_swing_high:
+                                ca_swing_high = self.high[ca_swing_shift]
+                        ca_location_feature = 0.0
+                        if ca_atr > 0.0:
+                            if ca_direction > 0:
+                                ca_location_feature = (ca_low - ca_swing_low) / ca_atr
+                            else:
+                                ca_location_feature = (ca_swing_high - ca_high) / ca_atr
+                        if isnan(ca_location_feature):
+                            ca_location_feature = 0.0
+                        ca_entry = self.close[i]
+                        ca_stop = nan
+                        if ca_direction > 0:
+                            ca_stop = ca_prior_low - ca_atr * 0.5
+                        else:
+                            ca_stop = ca_prior_high + ca_atr * 0.5
+                        ca_risk = abs(ca_entry - ca_stop)
+                        if ca_risk > 0.0 and ca_atr > 0.0 and not isnan(ca_stop):
+                            trend_difference = abs(ca_trend_feature - signal_trend)
+                            volume_difference = abs(ca_volume_ratio - signal_volume)
+                            location_difference = abs(ca_location_feature - signal_location)
+                            if isnan(trend_difference):
+                                trend_difference = 3.0
+                            if isnan(volume_difference):
+                                volume_difference = 3.0
+                            if isnan(location_difference):
+                                location_difference = 3.0
+                            trend_similarity = 0.0
+                            volume_similarity = 0.0
+                            location_similarity = 0.0
+                            if trend_difference <= 0.5:
+                                trend_similarity = 1.0
+                            elif trend_difference <= 1.5:
+                                trend_similarity = 0.5
+                            if volume_difference <= 0.5:
+                                volume_similarity = 1.0
+                            elif volume_difference <= 1.5:
+                                volume_similarity = 0.5
+                            if location_difference <= 0.5:
+                                location_similarity = 1.0
+                            elif location_difference <= 1.5:
+                                location_similarity = 0.5
+                            similarity = trend_similarity + volume_similarity + location_similarity + 1.0
+                            if isnan(similarity):
+                                similarity = 0.0
+                            if similarity >= 2.0 and i - last_analog_offset >= max_horizon:
+                                last_analog_offset = i
+                                analog_count += 1
+                                total_weight += similarity
+                                triggered_weight += similarity
+                                ca_target = ca_entry + float(ca_direction) * ca_risk * minimum_reward_risk
+                                best_favorable = 0.0
+                                outcome_decided = False
+                                trade_success = False
+                                episode_duration = float(max_horizon)
+                                opposite_found = False
+                                for j in range(1, max_horizon + 1):
+                                    path_shift = i - j
+                                    path_high = self.high[path_shift]
+                                    path_low = self.low[path_shift]
+                                    favorable = (path_high - ca_entry) / ca_atr
+                                    stop_hit = path_low <= ca_stop
+                                    target_hit = path_high >= ca_target
+                                    if ca_direction < 0:
+                                        favorable = (ca_entry - path_low) / ca_atr
+                                        stop_hit = path_high >= ca_stop
+                                        target_hit = path_low <= ca_target
+                                    if favorable > best_favorable:
+                                        best_favorable = favorable
+                                    if not outcome_decided:
+                                        if stop_hit:
+                                            outcome_decided = True
+                                            trade_success = False
+                                        elif target_hit:
+                                            outcome_decided = True
+                                            trade_success = True
+                                    if not opposite_found:
+                                        opp_open = self.open[path_shift]
+                                        opp_high = self.high[path_shift]
+                                        opp_low = self.low[path_shift]
+                                        opp_close = self.close[path_shift]
+                                        opp_prior_high = self.high[path_shift + 1]
+                                        opp_prior_low = self.low[path_shift + 1]
+                                        opp_prior_close = self.close[path_shift + 1]
+                                        opp_range = opp_high - opp_low
+                                        opp_body = abs(opp_close - opp_open)
+                                        if opp_range > 0.0 and opp_body > 0.0:
+                                            opp_close_pos = (opp_close - opp_low) / opp_range
+                                            opp_strong = opp_body >= opp_range * 0.55
+                                            opp_bull = opp_close > opp_open and opp_high > opp_prior_high and opp_low > opp_prior_low and opp_close > opp_prior_close and opp_strong and opp_close_pos >= 0.70
+                                            opp_bear = opp_close < opp_open and opp_high < opp_prior_high and opp_low < opp_prior_low and opp_close < opp_prior_close and opp_strong and opp_close_pos <= 0.30
+                                            if (ca_direction > 0 and opp_bear) or (ca_direction < 0 and opp_bull):
+                                                opposite_found = True
+                                                episode_duration = float(j)
+                                    if opposite_found:
+                                        break
+                                if not opposite_found:
+                                    episode_duration = float(max_horizon)
+                                triggered_move_sum += best_favorable * similarity
+                                triggered_duration_sum += episode_duration * similarity
+                                triggered_duration2_sum += episode_duration * episode_duration * similarity
+                                if outcome_decided and trade_success:
+                                    successful_weight += similarity
+            if isnan(total_weight):
+                total_weight = 0.0
+            if isnan(successful_weight):
+                successful_weight = 0.0
+            if isnan(triggered_weight):
+                triggered_weight = 0.0
+            if isnan(triggered_move_sum):
+                triggered_move_sum = 0.0
+            if isnan(triggered_duration_sum):
+                triggered_duration_sum = 0.0
+            if isnan(triggered_duration2_sum):
+                triggered_duration2_sum = 0.0
+            if total_weight > 0.0:
+                confidence = 100.0 * successful_weight / total_weight
+                if isnan(confidence):
+                    confidence = 0.0
+            if triggered_weight > 0.0:
+                expected_move_atr = triggered_move_sum / triggered_weight
+                expected_bars = triggered_duration_sum / triggered_weight
+                if isnan(expected_move_atr):
+                    expected_move_atr = 0.0
+                if isnan(expected_bars):
+                    expected_bars = 0.0
+                duration_variance = triggered_duration2_sum / triggered_weight - expected_bars * expected_bars
+                if isnan(duration_variance):
+                    duration_variance = 0.0
+                if duration_variance < 0.0:
+                    duration_variance = 0.0
+                ca_duration_root = duration_variance
+                if isnan(ca_duration_root):
+                    ca_duration_root = 1.0
+                if ca_duration_root < 1.0:
+                    ca_duration_root = 1.0
+                for q in range(12):
+                    if not isnan(ca_duration_root):
+                        if ca_duration_root > 0.0:
+                            ca_duration_root = (ca_duration_root + duration_variance / ca_duration_root) * 0.5
+                if isnan(ca_duration_root):
+                    ca_duration_root = 1.0
+                duration_spread = ca_duration_root * 0.75
+                if isnan(duration_spread):
+                    duration_spread = 1.0
+                if duration_spread < 1.0:
+                    duration_spread = 1.0
+                duration_low = float(int(expected_bars - duration_spread + 0.5))
+                duration_high = float(int(expected_bars + duration_spread + 0.5))
+                if isnan(duration_low):
+                    duration_low = 1.0
+                if duration_low < 1.0:
+                    duration_low = 1.0
+                if isnan(duration_high):
+                    duration_high = float(max_horizon)
+                if duration_high > float(max_horizon):
+                    duration_high = float(max_horizon)
+                if duration_high <= duration_low:
+                    duration_high = duration_low + 1.0
+                if duration_high > float(max_horizon):
+                    duration_high = float(max_horizon)
+            risk_in_atr = abs(signal_entry - signal_stop) / signal_atr
+            if isnan(risk_in_atr):
+                risk_in_atr = 0.0
+            estimate_available = analog_count >= 2 and triggered_weight > 0.0 and expected_move_atr > 0.0 and expected_bars > 0.0 and duration_high > 0.0 and not isnan(signal_entry) and not isnan(signal_stop)
+            if estimate_available:
+                target_level = signal_entry + float(signal_direction) * expected_move_atr * signal_atr
+                forecast_ready = analog_count >= minimum_analogs and confidence >= float(minimum_followthrough_pct) and expected_move_atr >= risk_in_atr * minimum_reward_risk
+                reason_code = 5.0
+                if not forecast_ready:
+                    if analog_count < minimum_analogs:
+                        reason_code = 2.0
+                    elif confidence < float(minimum_followthrough_pct):
+                        reason_code = 3.0
+                    elif expected_move_atr < risk_in_atr * minimum_reward_risk:
+                        reason_code = 4.0
+            else:
+                reason_code = 1.0
+
+            # One active forecast only: store the newest signal and clear older
+            # result state. Dashboard levels are blank whenever no forecast is active.
+            forecast_kind_state[0] = 2.0 if continuation_signal else 1.0
+            last_result_state[0] = 0.0
+            if last_event_code_state[0] != 11.0 and last_event_code_state[0] != 13.0:
+                last_closed_kind_state[0] = 0.0
+                if continuation_signal:
+                    last_event_code_state[0] = 7.0
+                else:
+                    last_event_code_state[0] = 2.0
+                last_event_bar_state[0] = bar_now_value
+            forecast_direction_state[0] = float(signal_direction)
+            forecast_pattern_state[0] = float(signal_pattern)
+            forecast_variant_state[0] = float(signal_variant)
+            forecast_entry_state[0] = signal_entry
+            forecast_stop_state[0] = signal_stop
+            forecast_target_state[0] = target_level
+            forecast_confidence_state[0] = confidence
+            forecast_analogs_state[0] = float(analog_count)
+            forecast_bars_state[0] = expected_bars
+            forecast_low_state[0] = duration_low
+            forecast_high_state[0] = duration_high
+            forecast_move_state[0] = expected_move_atr
+            forecast_reason_state[0] = reason_code
+            forecast_estimate_state[0] = 1.0 if estimate_available else 0.0
+            break_plot = True
+            if estimate_available:
+                entry_state[0] = signal_entry
+                stop_state[0] = signal_stop
+                target_state[0] = target_level
+                direction_state[0] = float(signal_direction)
+                remaining_state[0] = duration_high
+                if continuation_signal:
+                    cont_cooldown_state[0] = float(swing_length + 2)
+                    if signal_direction > 0:
+                        bull_cooldown_state[0] = float(swing_length + confirmation_bars)
+                    else:
+                        bear_cooldown_state[0] = float(swing_length + confirmation_bars)
+            else:
+                last_closed_kind_state[0] = forecast_kind_state[0]
+                last_result_state[0] = 6.0
+                last_event_code_state[0] = 14.0
+                last_event_bar_state[0] = bar_now_value
+                entry_state[0] = nan
+                stop_state[0] = nan
+                target_state[0] = nan
+                direction_state[0] = 0.0
+                remaining_state[0] = 0.0
+                forecast_kind_state[0] = 0.0
+                forecast_estimate_state[0] = 0.0
+                cont_cooldown_state[0] = float(swing_length + 2)
+
+        if not skip_new_candidate_bar and pending_direction_state[0] != 0.0 and cur_direction != 0:
+            last_event_code_state[0] = 6.0
+            last_event_bar_state[0] = bar_now_value
+
+        # A new raw reversal candidate immediately clears an active continuation
+        # forecast; levels stay blank until that reversal is confirmed.
+        if not skip_new_candidate_bar and cur_direction != 0 and forecast_kind_state[0] == 2.0 and direction_state[0] != 0.0 and remaining_state[0] > 0.0:
+            last_result_state[0] = 7.0
+            last_closed_kind_state[0] = 2.0
+            last_event_code_state[0] = 8.0
+            last_event_bar_state[0] = bar_now_value
+            entry_state[0] = nan
+            stop_state[0] = nan
+            target_state[0] = nan
+            direction_state[0] = 0.0
+            remaining_state[0] = 0.0
+            forecast_kind_state[0] = 0.0
+            forecast_estimate_state[0] = 0.0
+            forecast_direction_state[0] = 0.0
+            forecast_pattern_state[0] = 0.0
+            forecast_variant_state[0] = 0.0
+            forecast_entry_state[0] = nan
+            forecast_stop_state[0] = nan
+            forecast_target_state[0] = nan
+            forecast_confidence_state[0] = 0.0
+            forecast_analogs_state[0] = 0.0
+            forecast_bars_state[0] = 0.0
+            forecast_low_state[0] = 1.0
+            forecast_high_state[0] = float(max_horizon)
+            forecast_move_state[0] = 0.0
+            forecast_reason_state[0] = 1.0
+            cont_cooldown_state[0] = float(swing_length + 2)
+
+        # Start one unconfirmed candidate per swing. A direction-specific cooldown
+        # groups nearby patterns; an opposite-direction candidate remains possible.
+        if not skip_new_candidate_bar and pending_direction_state[0] == 0.0 and cur_direction != 0 and cur_atr_feature > 0.0 and not isnan(cur_break_level) and not isnan(cur_stop_level):
+            candidate_allowed = False
+            if cur_direction > 0 and bull_cooldown_state[0] <= 0.0:
+                candidate_allowed = True
+            elif cur_direction < 0 and bear_cooldown_state[0] <= 0.0:
+                candidate_allowed = True
+            if candidate_allowed:
+                pending_direction_state[0] = float(cur_direction)
+                pending_break_state[0] = cur_break_level
+                pending_stop_state[0] = cur_stop_level
+                pending_pattern_state[0] = float(cur_pattern)
+                pending_variant_state[0] = float(cur_variant)
+                pending_atr_state[0] = cur_atr_feature
+                pending_volume_state[0] = cur_volume_feature
+                pending_trend_state[0] = cur_trend_feature
+                pending_location_state[0] = cur_location_feature
+                pending_elapsed_state[0] = 0.0
+                pending_marker_state[0] = cur_marker_level
+                if cur_direction > 0:
+                    bull_cooldown_state[0] = float(swing_length + confirmation_bars)
+                else:
+                    bear_cooldown_state[0] = float(swing_length + confirmation_bars)
+                candidate_marker = cur_marker_level
+                last_event_code_state[0] = 1.0
+                last_event_bar_state[0] = bar_now_value
+            else:
+                last_event_code_state[0] = 6.0
+                last_event_bar_state[0] = bar_now_value
+
+    if self.is_last_bar:
+        price_precision_value = float(self.info.price_precision)
+        price_digits = 5
+        if not isnan(price_precision_value):
+            if price_precision_value >= 0.0:
+                if price_precision_value <= 10.0:
+                    price_digits = int(price_precision_value)
+        pattern_main_text = '--'
+        pattern_main_text_code = int(0.0 if isnan(forecast_pattern_state[0]) else forecast_pattern_state[0] + 0.5)
+        pattern_main_text_variant = int(0.0 if isnan(forecast_variant_state[0]) else forecast_variant_state[0] + 0.5)
+        if pattern_main_text_code == 1:
+            if pattern_main_text_variant == 11:
+                pattern_main_text = 'Bullish engulfing'
+            elif pattern_main_text_variant == 12:
+                pattern_main_text = 'Bearish engulfing'
+            else:
+                pattern_main_text = 'Engulfing'
+        elif pattern_main_text_code == 2:
+            if pattern_main_text_variant == 21:
+                pattern_main_text = 'Hammer'
+            elif pattern_main_text_variant == 22:
+                pattern_main_text = 'Inverted hammer'
+            elif pattern_main_text_variant == 23:
+                pattern_main_text = 'Hanging man'
+            elif pattern_main_text_variant == 24:
+                pattern_main_text = 'Shooting star'
+            else:
+                pattern_main_text = 'Hammer family'
+        elif pattern_main_text_code == 3:
+            if pattern_main_text_variant == 31:
+                pattern_main_text = 'Morning star'
+            elif pattern_main_text_variant == 32:
+                pattern_main_text = 'Evening star'
+            elif pattern_main_text_variant == 33:
+                pattern_main_text = 'Morning doji star'
+            elif pattern_main_text_variant == 34:
+                pattern_main_text = 'Evening doji star'
+            else:
+                pattern_main_text = 'Star (incl. doji)'
+        pattern_pending_text = '--'
+        pattern_pending_text_code = int(0.0 if isnan(pending_pattern_state[0]) else pending_pattern_state[0] + 0.5)
+        pattern_pending_text_variant = int(0.0 if isnan(pending_variant_state[0]) else pending_variant_state[0] + 0.5)
+        if pattern_pending_text_code == 1:
+            if pattern_pending_text_variant == 11:
+                pattern_pending_text = 'Bullish engulfing'
+            elif pattern_pending_text_variant == 12:
+                pattern_pending_text = 'Bearish engulfing'
+            else:
+                pattern_pending_text = 'Engulfing'
+        elif pattern_pending_text_code == 2:
+            if pattern_pending_text_variant == 21:
+                pattern_pending_text = 'Hammer'
+            elif pattern_pending_text_variant == 22:
+                pattern_pending_text = 'Inverted hammer'
+            elif pattern_pending_text_variant == 23:
+                pattern_pending_text = 'Hanging man'
+            elif pattern_pending_text_variant == 24:
+                pattern_pending_text = 'Shooting star'
+            else:
+                pattern_pending_text = 'Hammer family'
+        elif pattern_pending_text_code == 3:
+            if pattern_pending_text_variant == 31:
+                pattern_pending_text = 'Morning star'
+            elif pattern_pending_text_variant == 32:
+                pattern_pending_text = 'Evening star'
+            elif pattern_pending_text_variant == 33:
+                pattern_pending_text = 'Morning doji star'
+            elif pattern_pending_text_variant == 34:
+                pattern_pending_text = 'Evening doji star'
+            else:
+                pattern_pending_text = 'Star (incl. doji)'
+        pattern_last_text = '--'
+        pattern_last_text_code = int(0.0 if isnan(last_pattern_state[0]) else last_pattern_state[0] + 0.5)
+        pattern_last_text_variant = int(0.0 if isnan(last_variant_state[0]) else last_variant_state[0] + 0.5)
+        if pattern_last_text_code == 1:
+            if pattern_last_text_variant == 11:
+                pattern_last_text = 'Bullish engulfing'
+            elif pattern_last_text_variant == 12:
+                pattern_last_text = 'Bearish engulfing'
+            else:
+                pattern_last_text = 'Engulfing'
+        elif pattern_last_text_code == 2:
+            if pattern_last_text_variant == 21:
+                pattern_last_text = 'Hammer'
+            elif pattern_last_text_variant == 22:
+                pattern_last_text = 'Inverted hammer'
+            elif pattern_last_text_variant == 23:
+                pattern_last_text = 'Hanging man'
+            elif pattern_last_text_variant == 24:
+                pattern_last_text = 'Shooting star'
+            else:
+                pattern_last_text = 'Hammer family'
+        elif pattern_last_text_code == 3:
+            if pattern_last_text_variant == 31:
+                pattern_last_text = 'Morning star'
+            elif pattern_last_text_variant == 32:
+                pattern_last_text = 'Evening star'
+            elif pattern_last_text_variant == 33:
+                pattern_last_text = 'Morning doji star'
+            elif pattern_last_text_variant == 34:
+                pattern_last_text = 'Evening doji star'
+            else:
+                pattern_last_text = 'Star (incl. doji)'
+
+        if pattern_main_text_code == 4:
+            if pattern_main_text_variant == 41:
+                pattern_main_text = 'Bullish continuation'
+            elif pattern_main_text_variant == 42:
+                pattern_main_text = 'Bearish continuation'
+            else:
+                pattern_main_text = 'Continuation'
+        if pattern_pending_text_code == 4:
+            pattern_pending_text = 'Continuation'
+        if pattern_last_text_code == 4:
+            pattern_last_text = 'Continuation'
+
+        active_forecast = direction_state[0] != 0.0 and remaining_state[0] > 0.0
+        pending_candidate = pending_direction_state[0] != 0.0
+        forecast_is_continuation = forecast_kind_state[0] == 2.0
+        side_text = '--'
+        if active_forecast:
+            if forecast_is_continuation:
+                side_text = 'BUY (continuation)' if forecast_direction_state[0] > 0.0 else 'SELL (continuation)'
+            else:
+                side_text = 'BUY (reversal)' if forecast_direction_state[0] > 0.0 else 'SELL (reversal)'
+        pattern_label = 'Pattern'
+        entry_label = 'Entry / trigger'
+        stop_label = 'Stop loss'
+        target_label = 'TP estimate'
+        move_label = 'Expected move'
+        duration_label = 'Expected duration'
+        quality_label = 'Estimate quality'
+        pattern_text = '--'
+        if active_forecast:
+            pattern_text = pattern_main_text
+        pending_left = confirmation_bars - int(0.0 if isnan(pending_elapsed_state[0]) else pending_elapsed_state[0] + 0.5)
+        if pending_left < 1:
+            pending_left = 1
+        pending_text = '--'
+        if active_forecast and pending_candidate:
+            pending_side = 'BUY' if pending_direction_state[0] > 0.0 else 'SELL'
+            pending_text = pending_side + ' ' + pattern_pending_text + ' (' + str(pending_left) + ' bars left)'
+
+        result_text = '--'
+        result_code = int(0.0 if isnan(last_result_state[0]) else last_result_state[0] + 0.5)
+        if result_code == 1:
+            result_text = 'TP estimate reached'
+        elif result_code == 2:
+            result_text = 'Stop loss touched'
+        elif result_code == 3:
+            result_text = 'Opposite confirmed reversal'
+        elif result_code == 4:
+            result_text = 'Duration limit reached; no extension'
+        elif result_code == 5:
+            result_text = 'Replaced by newer signal'
+        elif result_code == 6:
+            result_text = 'No historical estimate'
+        elif result_code == 7:
+            result_text = 'Continuation cleared for new reversal candidate'
+
+        status_text = 'Waiting for new confirmed reversal or continuation'
+        if active_forecast:
+            kind_word = 'continuation' if forecast_is_continuation else 'reversal'
+            status_text = 'Forecast active | ' + kind_word + ' | monitoring closed candles'
+            if pending_candidate:
+                pending_side = 'BUY' if pending_direction_state[0] > 0.0 else 'SELL'
+                status_text = 'Forecast active | ' + kind_word + ' | ' + pending_side + ' candidate waiting (' + str(pending_left) + ' bars)'
+        elif pending_candidate:
+            pending_side = 'BUY' if pending_direction_state[0] > 0.0 else 'SELL'
+            status_text = pending_side + ' candidate | waiting confirmation (' + str(pending_left) + ' bars)'
+        elif result_code == 6:
+            status_text = 'Waiting for new confirmed reversal or continuation | no estimate'
+        elif result_code == 7:
+            status_text = 'Reversal candidate found | continuation cleared'
+        elif result_code > 0:
+            status_text = 'Waiting for new confirmed reversal or continuation'
+
+        bar_now_display = bar_now_value
+        if isnan(bar_now_display):
+            bar_now_display = 0.0
+        data_text = 'Last closed candle | chart bar count ' + str(int(bar_now_display))
+        event_code = int(0.0 if isnan(last_event_code_state[0]) else last_event_code_state[0] + 0.5)
+        event_bar = last_event_bar_state[0]
+        bars_since_event = 0
+        if event_bar > 0.0:
+            bars_since_event = int(bar_now_display - event_bar + 0.5)
+        if bars_since_event < 0:
+            bars_since_event = 0
+        closed_kind_prefix = ''
+        if last_closed_kind_state[0] == 2.0:
+            closed_kind_prefix = 'Continuation '
+        event_text = '--'
+        if event_code == 1:
+            event_text = 'Reversal candidate appeared'
+        elif event_code == 2:
+            event_text = 'Reversal forecast confirmed'
+        elif event_code == 3:
+            event_text = 'Candidate expired; no confirmation'
+        elif event_code == 4:
+            event_text = 'Forecast closed'
+        elif event_code == 5:
+            event_text = 'Confirmed reversal; no estimate'
+        elif event_code == 6:
+            event_text = 'Nearby pattern ignored'
+        elif event_code == 7:
+            event_text = 'Continuation forecast confirmed'
+        elif event_code == 8:
+            event_text = 'Continuation cleared for new reversal candidate'
+        elif event_code == 9:
+            event_text = closed_kind_prefix + 'TP estimate reached'
+        elif event_code == 10:
+            event_text = closed_kind_prefix + 'Stop loss touched'
+        elif event_code == 11:
+            event_text = closed_kind_prefix + 'Opposite confirmed reversal'
+        elif event_code == 12:
+            event_text = closed_kind_prefix + 'Duration limit reached; no extension'
+        elif event_code == 13:
+            event_text = closed_kind_prefix + 'Replaced by newer signal'
+        elif event_code == 14:
+            event_text = closed_kind_prefix + 'No historical estimate'
+        last_update_text = event_text
+        if last_update_text != '--':
+            if bars_since_event > 0:
+                last_update_text = last_update_text + ' | ' + str(bars_since_event) + ' bars ago'
+            else:
+                last_update_text = last_update_text + ' | this bar'
+
+        cooldown_active = False
+        if bull_cooldown_state[0] > 0.0:
+            cooldown_active = True
+        if bear_cooldown_state[0] > 0.0:
+            cooldown_active = True
+        cont_cooldown_active = cont_cooldown_state[0] > 0.0
+        no_signal_text = 'No qualifying reversal or continuation setup on latest closed candle'
+        if active_forecast:
+            no_signal_text = 'Forecast active; no new signal needed'
+            if pending_candidate:
+                no_signal_text = 'Forecast active; candidate awaiting confirmation'
+        elif pending_candidate:
+            no_signal_text = 'Candidate awaiting two-bar confirmation'
+        elif event_code == 3:
+            no_signal_text = 'Last candidate expired; no two-bar confirmation'
+            if cooldown_active:
+                no_signal_text = no_signal_text + ' | cooldown active'
+        elif result_code == 6:
+            no_signal_text = 'Confirmed signal had no historical estimate; waiting for next setup'
+        elif result_code == 7:
+            no_signal_text = 'Continuation cleared; reversal candidate waiting confirmation'
+        elif result_code > 0:
+            no_signal_text = 'Previous forecast closed; waiting for new reversal or continuation'
+            if cooldown_active:
+                no_signal_text = no_signal_text + ' | cooldown active'
+        elif event_code == 6:
+            no_signal_text = 'Nearby pattern merged into existing swing'
+        elif cont_cooldown_active:
+            no_signal_text = 'Continuation cooldown active'
+        elif cooldown_active:
+            no_signal_text = 'One-signal-per-swing cooldown active'
+
+        quality_text = '--'
+        if active_forecast and forecast_estimate_state[0] > 0.5:
+            quality_code = int(0.0 if isnan(forecast_reason_state[0]) else forecast_reason_state[0] + 0.5)
+            if quality_code == 2:
+                quality_text = 'Low sample count'
+            elif quality_code == 3:
+                quality_text = 'Below follow-through filter'
+            elif quality_code == 4:
+                quality_text = 'Below reward/risk filter'
+            elif quality_code == 5:
+                quality_text = 'Meets selected filters'
+
+        entry_text = '--'
+        stop_text = '--'
+        target_text = '--'
+        move_text = '--'
+        bars_text = '--'
+        history_text = '--'
+        expiry_text = '--'
+        if active_forecast:
+            if not isnan(forecast_entry_state[0]):
+                entry_text = str(round(forecast_entry_state[0], price_digits))
+            if not isnan(forecast_stop_state[0]):
+                stop_text = str(round(forecast_stop_state[0], price_digits))
+            if forecast_estimate_state[0] > 0.5:
+                if not isnan(forecast_target_state[0]):
+                    target_text = str(round(forecast_target_state[0], price_digits))
+                if not isnan(forecast_move_state[0]):
+                    move_text = '+' + str(round(forecast_move_state[0], 2)) + ' ATR'
+                bars_text = str(int(0.0 if isnan(forecast_bars_state[0]) else forecast_bars_state[0] + 0.5)) + ' bars (' + str(int(0.0 if isnan(forecast_low_state[0]) else forecast_low_state[0] + 0.5)) + '-' + str(int(0.0 if isnan(forecast_high_state[0]) else forecast_high_state[0] + 0.5)) + ')'
+                history_text = str(int(0.0 if isnan(forecast_confidence_state[0]) else forecast_confidence_state[0] + 0.5)) + '% | ' + str(int(0.0 if isnan(forecast_analogs_state[0]) else forecast_analogs_state[0] + 0.5)) + ' samples'
+            expiry_text = str(int(0.0 if isnan(remaining_state[0]) else remaining_state[0] + 0.5)) + ' bars'
+
+        dashboard.get().clear()
+        dashboard.get().append(TableRow([
+            TableCell('REVERSAL + CONTINUATION FORECAST', bg_color=color.NAVY(0.90)),
+            TableCell(side_text, bg_color=color.NAVY(0.90)),
+        ]))
+        dashboard.get().add_row(['Status', status_text])
+        dashboard.get().add_row([pattern_label, pattern_text])
+        dashboard.get().add_row(['Pending candidate', pending_text])
+        dashboard.get().add_row(['Data through', data_text])
+        dashboard.get().add_row([entry_label, entry_text])
+        dashboard.get().add_row([stop_label, stop_text])
+        dashboard.get().add_row([target_label, target_text])
+        dashboard.get().add_row([move_label, move_text])
+        dashboard.get().add_row([duration_label, bars_text])
+        dashboard.get().add_row([quality_label, quality_text])
+        dashboard.get().add_row(['Historical follow-through / samples', history_text])
+        dashboard.get().add_row(['Forecast expires in', expiry_text])
+        dashboard.get().add_row(['No-signal reason', no_signal_text])
+        dashboard.get().add_row(['Last result / update', last_update_text])
+        self.chart.draw(dashboard.get())
+
+    # Break level plots on a new confirmed signal. Step plots keep active levels
+    # horizontal and NaN values separate unrelated forecasts.
+    entry_plot = entry_state[0]
+    stop_plot = stop_state[0]
+    target_plot = target_state[0]
+    if break_plot:
+        entry_plot = nan
+        stop_plot = nan
+        target_plot = nan
+
+    return (
+        plot.Marker(candidate_marker, color=color.YELLOW, offset=-1),
+        plot.Marker(confirmed_bull_marker, color=color.GREEN, offset=-1),
+        plot.Marker(confirmed_bear_marker, color=color.RED, offset=-1),
+        plot.Marker(continuation_marker, color=color.AQUA, offset=-1),
+        plot.Steps(entry_plot),
+        plot.Steps(stop_plot),
+        plot.Steps(target_plot),
+    )
